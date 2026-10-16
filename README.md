@@ -1,7 +1,7 @@
 # PDBSplat
 Render PDB database proteins as Gaussian Splats
 
-Use [Spark](https://sparkjs.dev) with [three.js](https://threejs.org)
+Use [three.js](https://threejs.org) WebGPU based rendering
 
 [Example basis](https://sparkjs.dev/examples/#procedural-splats)
 
