@@ -3,6 +3,7 @@ import { button, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
 import { defaultOptions, examples, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
+import { styles, type Style } from './viewer/styles.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
 // ?webgl in the page URL starts with the panel's Use WebGL 2 on
@@ -158,6 +159,12 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
         options: ['element', 'chain'] satisfies ColorBy[],
         value: defaultOptions.colorBy,
         onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
+      },
+      style: {
+        label: 'Style',
+        options: Object.fromEntries(styles.map((style) => [style.label, style.id])),
+        value: defaultOptions.style,
+        onChange: (style: Style) => setOptions({ style }),
       },
       scale: {
         label: 'Size',

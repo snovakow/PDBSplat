@@ -19,6 +19,7 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
   - **Example** loads one of the six examples.
   - **PDB ID** and **Load** fetch any other entry.
   - **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
+  - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model.
   - **Size** scales every splat, and **Opacity** sets how much they let through.
   - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
   - **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing.

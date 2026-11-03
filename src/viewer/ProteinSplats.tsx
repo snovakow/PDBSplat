@@ -11,6 +11,7 @@ import {
 import { elementColor, vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
 import { isShown, useStore } from '../store.ts'
+import { styleColorNode } from './styles.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
@@ -53,6 +54,8 @@ export function ProteinSplats({ controlsRef }: Props) {
 
     const geometry = createGaussianSplatGeometry(centers, covariances, colors)
     const splat = new GaussianSplat(geometry, { autoSort: true })
+    const colorNode = styleColorNode(options.style)
+    if (colorNode) splat.material.colorNode = colorNode
     const { scene } = get()
     scene.add(splat)
 

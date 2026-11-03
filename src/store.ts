@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import type { Atom } from './pdb/mmcif.ts'
+import type { Style } from './viewer/styles.ts'
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
 export const examples = [
@@ -29,6 +30,7 @@ export type ColorBy = 'element' | 'chain'
 // What the panel sets and the scene draws
 export interface ViewOptions {
   colorBy: ColorBy
+  style: Style
   // Times each atom's van der Waals radius
   scale: number
   opacity: number
@@ -36,7 +38,7 @@ export interface ViewOptions {
   waters: boolean
 }
 
-export const defaultOptions: ViewOptions = { colorBy: 'element', scale: 1, opacity: 0.9, hydrogens: true, waters: false }
+export const defaultOptions: ViewOptions = { colorBy: 'element', style: 'soft', scale: 1, opacity: 0.9, hydrogens: true, waters: false }
 
 export function isShown(atom: Atom, options: ViewOptions) {
   return (options.hydrogens || !atom.hydrogen) && (options.waters || !atom.water)
