@@ -6,7 +6,7 @@ PDBSplat is a browser app, now being set up, for rendering proteins from the [Pr
 
 ## Status
 
-The full-window canvas draws a test cloud of procedural splats that you can orbit. Behind it, the app fetches a structure from the Protein Data Bank and reads its atoms, but doesn't draw them yet. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first protein on screen.
+The app fetches a structure from the Protein Data Bank and draws each of its atoms as a splat, sized by its element's van der Waals radius and coloured in the element's CPK colour. Each entry is framed to fit the window, and you can orbit it. A control panel loads any entry by its ID, colours the atoms by element or by chain, changes their size and opacity, and shows or hides hydrogens and waters. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first release.
 
 ## Running it locally
 

@@ -1,12 +1,14 @@
 import { OrbitControls, Stats } from '@react-three/drei'
-import { TestCloud } from './TestCloud.tsx'
+import { useRef, type ComponentRef } from 'react'
+import { ProteinSplats } from './ProteinSplats.tsx'
 
 export function Viewer() {
+  const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null)
   return (
     <>
-      <OrbitControls makeDefault />
+      <OrbitControls ref={controlsRef} makeDefault />
       <Stats />
-      <TestCloud />
+      <ProteinSplats controlsRef={controlsRef} />
     </>
   )
 }

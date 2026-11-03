@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import type { Atom } from './pdb/mmcif.ts'
 
@@ -6,6 +7,24 @@ import type { Atom } from './pdb/mmcif.ts'
 export const firstEntry = '1CRN'
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
+
+export type ColorBy = 'element' | 'chain'
+
+// What the panel sets and the scene draws
+export interface ViewOptions {
+  colorBy: ColorBy
+  // Times each atom's van der Waals radius
+  scale: number
+  opacity: number
+  hydrogens: boolean
+  waters: boolean
+}
+
+export const defaultOptions: ViewOptions = { colorBy: 'element', scale: 1, opacity: 0.9, hydrogens: true, waters: false }
+
+export function isShown(atom: Atom, options: ViewOptions) {
+  return (options.hydrogens || !atom.hydrogen) && (options.waters || !atom.water)
+}
 
 interface State {
   // The entry shown, which stays until the next one is ready
@@ -16,6 +35,8 @@ interface State {
   status: Status
   error: string | null
   load: (id: string) => Promise<void>
+  options: ViewOptions
+  setOptions: (changes: Partial<ViewOptions>) => void
 }
 
 export const useStore = create<State>()((set) => ({
@@ -24,6 +45,13 @@ export const useStore = create<State>()((set) => ({
   atoms: [],
   status: 'idle',
   error: null,
+  options: defaultOptions,
+  // Unchanged values keep the same options object, so the scene doesn't rebuild for nothing
+  setOptions: (changes) =>
+    set((state) => {
+      const options = { ...state.options, ...changes }
+      return shallow(options, state.options) ? state : { options }
+    }),
   load: async (id) => {
     set({ status: 'loading', error: null })
     try {

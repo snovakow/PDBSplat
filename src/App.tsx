@@ -1,7 +1,8 @@
 import { Canvas } from '@react-three/fiber'
+import { button, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
-import { firstEntry, useStore } from './store.ts'
+import { defaultOptions, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
 // ?webgl in the page URL forces WebGPURenderer's WebGL 2 fallback
@@ -99,10 +100,77 @@ function App() {
   )
 
   return (
-    <Canvas key={forceWebGL ? 'webgl' : 'webgpu'} gl={gl} camera={camera} flat>
-      <Viewer />
-    </Canvas>
+    <>
+      <Canvas key={forceWebGL ? 'webgl' : 'webgpu'} gl={gl} camera={camera} flat>
+        <Viewer />
+      </Canvas>
+      <Panel />
+    </>
   )
+}
+
+const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', ready: 'Ready', failed: '' }
+
+// The leva panel: the view options go to the store as they change, and the entry's details come back read-only
+function Panel() {
+  const id = useStore((s) => s.id)
+  const title = useStore((s) => s.title)
+  const status = useStore((s) => s.status)
+  const error = useStore((s) => s.error)
+  const shown = useStore((s) => s.atoms.filter((atom) => isShown(atom, s.options)).length)
+
+  const [, set] = useControls(() => {
+    const { load, setOptions } = useStore.getState()
+    return {
+      id: { label: 'PDB ID', value: firstEntry },
+      Load: button((get) => void load(String(get('id')))),
+      colorBy: {
+        label: 'Colour by',
+        options: ['element', 'chain'] satisfies ColorBy[],
+        value: defaultOptions.colorBy,
+        onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
+      },
+      scale: {
+        label: 'Size',
+        value: defaultOptions.scale,
+        min: 0.25,
+        max: 2,
+        step: 0.05,
+        onChange: (scale: number) => setOptions({ scale }),
+      },
+      opacity: {
+        label: 'Opacity',
+        value: defaultOptions.opacity,
+        min: 0,
+        max: 1,
+        step: 0.05,
+        onChange: (opacity: number) => setOptions({ opacity }),
+      },
+      hydrogens: {
+        label: 'Hydrogens',
+        value: defaultOptions.hydrogens,
+        onChange: (hydrogens: boolean) => setOptions({ hydrogens }),
+      },
+      waters: {
+        label: 'Waters',
+        value: defaultOptions.waters,
+        onChange: (waters: boolean) => setOptions({ waters }),
+      },
+      entry: { label: 'Entry', value: '', editable: false },
+      shown: { label: 'Atoms shown', value: '', editable: false },
+      status: { label: 'Status', value: '', editable: false },
+    }
+  })
+
+  useEffect(() => {
+    set({
+      entry: id ? `${id}: ${title}` : '',
+      shown: id ? shown.toLocaleString('en') : '',
+      status: error ?? statusText[status],
+    })
+  }, [set, id, title, shown, status, error])
+
+  return null
 }
 
 export default App
