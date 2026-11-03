@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { button, useControls } from 'leva'
+import { button, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
 import { defaultOptions, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
@@ -122,7 +122,8 @@ function Panel() {
   const [, set] = useControls(() => {
     const { load, setOptions } = useStore.getState()
     return {
-      id: { label: 'PDB ID', value: firstEntry },
+      // Without the type, leva takes an ID like 1CRN for the number 1 with the unit CRN, as in 10px
+      id: { label: 'PDB ID', value: firstEntry, type: LevaInputs.STRING },
       Load: button((get) => void load(String(get('id')))),
       colorBy: {
         label: 'Colour by',
