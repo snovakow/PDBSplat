@@ -6,7 +6,7 @@ PDBSplat is a browser app, now being set up, for rendering proteins from the [Pr
 
 ## Status
 
-The full-window canvas draws a test cloud of procedural splats that you can orbit, but no protein yet. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first protein on screen.
+The full-window canvas draws a test cloud of procedural splats that you can orbit. Behind it, the app fetches a structure from the Protein Data Bank and reads its atoms, but doesn't draw them yet. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first protein on screen.
 
 ## Running it locally
 

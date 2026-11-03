@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
+import { firstEntry, useStore } from './store.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
 // ?webgl in the page URL forces WebGPURenderer's WebGL 2 fallback
@@ -47,6 +48,11 @@ function watchForFailure(renderer: WebGPURenderer, fallBack: () => void) {
 const camera = { fov: 50, near: 0.1, far: 5000, position: [0, 0, 60] as const }
 
 function App() {
+  const load = useStore((s) => s.load)
+  useEffect(() => {
+    void load(firstEntry)
+  }, [load])
+
   const [forceWebGL, setForceWebGL] = useState(webglRequested)
   // The Canvas's key follows the flag, so setting it mounts a new Canvas whose factory forces the fallback
   const gl = useCallback(
