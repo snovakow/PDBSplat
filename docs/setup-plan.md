@@ -45,7 +45,7 @@ These are the defaults the prompts follow. Change a row before running the phase
 | D7 | Structure data | **mmCIF** from the RCSB's file server, `https://files.rcsb.org/download/<ID>.cif`, which any site may fetch, read in the browser by a small reader of the `_atom_site` table | BinaryCIF, which is smaller but needs a decoder; or the legacy `.pdb` format, which the largest entries don't have |
 | D8 | Atoms as splats | One round splat per atom at its coordinates, in ångströms, centred on the structure. Its size comes from the element's van der Waals radius times a panel scale, its colour from the element (the CPK colours Jmol uses), and its opacity from the panel | Colour by chain, residue or B-factor, as panel options |
 | D9 | Which atoms | The first model (NMR entries carry many), the first alternate location, hydrogens shown and waters hidden, each with a panel toggle | |
-| D10 | Entries to start with | **1CRN**, crambin: 327 atoms, small and fast. **4HHB**, human haemoglobin, as the larger test (4,384 atoms plus 395 hemes and waters). A panel field loads any PDB ID | |
+| D10 | Entries to start with | **1IGT**, an intact mouse antibody, is the entry the page opens on: 12,956 atoms, a Y of four protein chains with two sugar chains. **1CRN**, crambin: 327 atoms, small and fast. **4HHB**, human haemoglobin, as the larger test (4,384 atoms plus 395 hemes and waters). A panel field loads any PDB ID | |
 | D11 | Build output | `dist/` with `base: ''`; deploy by copying `dist/` into a new `~/Sites/localhost/live/pdbsplat/`, served at snovakow.com/pdbsplat | Another path name |
 | D12 | Version | There's no earlier version to continue, so versions start at `0.0.0`, the Vite template's. Only `/commit` changes them, each time with a version commit that becomes the next run's baseline (section 5). Phase 1's `/commit 0.0.1` makes the first; every run after it bumps the last number; Phase 7's `/commit 0.1.0` marks the first release, the one merged into `main` and deployed. Phase 0's run has no `package.json` to version, so it ends without one, and pushing closes it | Keep bumping the last number at the release too, as timspicks does |
 | D13 | Renderer | three's **`WebGPURenderer`**, created by an async `gl` factory on the Canvas that awaits `renderer.init()`. `GaussianSplat` needs it: plain `WebGLRenderer` can't draw these splats. Where a browser lacks WebGPU, the renderer falls back to its WebGL 2 backend, and the splats still draw, sorted on the CPU instead of the GPU. Some GPUs offer WebGPU but can't compile the sort's compute shaders: this Mac's 2014 Intel Iris fails on `CountingSortReset` with a `GPUInternalError`, and the failure takes Chrome's GPU process down with it. So GPUs known to fail (Intel's `gen-7`, this Mac's) start on the fallback without trying WebGPU, and on any other GPU a `GPUInternalError` or a lost device under WebGPU switches to the fallback by remounting the Canvas with `forceWebGL`, retrying the fallback's start while the GPU process recovers (Appendix C, item 1) | |
@@ -214,9 +214,9 @@ Read docs/setup-plan.md: section 2 (especially D7, D9 and D10), Phase 4 and Appe
 
 - `src/pdb/fetchEntry.ts`: check the ID's shape before fetching (four characters, starting with a digit), then fetch `https://files.rcsb.org/download/<ID>.cif`. A new request aborts the one before it, a missing entry (404) reads as "no such entry", a network failure reads as such, and loaded entries are cached by ID (item 8).
 - `src/pdb/mmcif.ts`: a small reader for what the app needs, the `_atom_site` table and `_struct.title`. It handles CIF's whitespace-separated values, single- and double-quoted strings, semicolon text fields, and `?` and `.` as empty, and finds columns by name rather than position, since their order varies between entries (Appendix A). Each atom keeps its element, coordinates, chain, residue name and number, atom name, alternate location, occupancy, B-factor, model number and whether it's a heteroatom. It then applies D9: the first model and the first alternate location, keeping hydrogens and waters marked so the panel can toggle them.
-- `src/store.ts` (zustand, D4): the entry's ID, its status (idle, loading, ready or failed), the error, the title and the atoms, with a `load(id)` action that starts on 1CRN (D10).
+- `src/store.ts` (zustand, D4): the entry's ID, its status (idle, loading, ready or failed), the error, the title and the atoms, with a `load(id)` action that starts on 1IGT (D10).
 
-**Check** With the dev tools open: loading 1CRN reports 327 atoms and its title, and 4HHB reports 4,779 atoms, 221 of them waters; neither has hydrogens or alternate locations. An ID like `ABCD` is refused before any request, and an ID with no entry shows an error without a crash. A full reload shows 1CRN again.
+**Check** With the dev tools open: loading 1CRN reports 327 atoms and its title, and 4HHB reports 4,779 atoms, 221 of them waters; neither has hydrogens or alternate locations. An ID like `ABCD` is refused before any request, and an ID with no entry shows an error without a crash. A full reload shows the starting entry again, 1IGT since it replaced 1CRN after Phase 5 (D10).
 
 ### Phase 5: atoms as splats, and the panel
 
@@ -233,7 +233,7 @@ Read docs/setup-plan.md: section 2 (especially D8 and D9), Phase 5 and Appendice
 - Framing: when an entry loads, fit its bounding sphere in view and put the orbit target on the centroid (item 7).
 - The panel, in leva (D3): the PDB ID with a Load button; colour by element or chain; size scale (0.25 to 2, default 1); opacity (0 to 1, default 0.9); hydrogens (on) and waters (off); and, read-only, the title and the number of atoms shown. A failed load shows its message.
 
-**Check** 1CRN appears as a soft cloud of 327 splats: carbon grey, nitrogen blue, oxygen red, sulphur yellow. 4HHB loads framed, showing 4,558 atoms with its waters hidden, its four chains distinct when coloured by chain, and its hemes' iron visible. Showing the waters adds them, the size and opacity sliders act at once, the splats keep blending correctly as you orbit, and Stats shows the frame rate holding. Loading one entry after another doesn't slow the page down.
+**Check** The page opens on 1IGT (D10): 12,956 atoms in the antibody's Y shape, at about 30 fps under this Mac's WebGL 2 fallback. 1CRN appears as a soft cloud of 327 splats: carbon grey, nitrogen blue, oxygen red, sulphur yellow. 4HHB loads framed, showing 4,558 atoms with its waters hidden, its four chains distinct when coloured by chain, and its hemes' iron visible. Showing the waters adds them, the size and opacity sliders act at once, the splats keep blending correctly as you orbit, and Stats shows the frame rate holding. Loading one entry after another doesn't slow the page down.
 
 ### Phase 6: review and README
 
@@ -278,7 +278,7 @@ Read docs/setup-plan.md in full. Carry out Phase 6 only: review the app against 
    ```
 
    Then publish `live/` to snovakow.com the way you do for the other sites.
-4. Open https://snovakow.com/pdbsplat/ and check that it loads 1CRN, that another entry loads too (so requests to the RCSB work from the site), that there are no 404s, and that the Network panel shows gtag.
+4. Open https://snovakow.com/pdbsplat/ and check that it loads 1IGT, that another entry loads too (so requests to the RCSB work from the site), that there are no 404s, and that the Network panel shows gtag.
 5. Once it's up, add the live demo to the README and run `/commit` in a fresh thread; its version commit is `0.1.1`. Link PDBSplat from your homepage if you want visitors to find it.
 
 ## 5. The /commit skill
@@ -322,7 +322,7 @@ Facts the phases rely on, checked on 2026-10-16.
 - `https://files.rcsb.org/download/<ID>.cif` returns the entry as mmCIF, `chemical/x-cif`, with `Access-Control-Allow-Origin: *`, so the browser can fetch it from any site.
 - The `_atom_site` table's columns, as 1CRN has them: `group_PDB` (`ATOM` or `HETATM`), `id`, `type_symbol` (the element), `label_atom_id`, `label_alt_id`, `label_comp_id`, `label_asym_id`, `label_entity_id`, `label_seq_id`, `pdbx_PDB_ins_code`, `Cartn_x`, `Cartn_y`, `Cartn_z` (in ångströms), `occupancy`, `B_iso_or_equiv`, `pdbx_formal_charge`, `auth_seq_id`, `auth_comp_id`, `auth_asym_id`, `auth_atom_id` and `pdbx_PDB_model_num`. Read columns by name; other entries order or omit some.
 - `_struct.title` holds the entry's title as a quoted string.
-- Test entries: **1CRN**, crambin, 327 atoms, one model, no heteroatoms, titled "WATER STRUCTURE OF A HYDROPHOBIC PROTEIN AT ATOMIC RESOLUTION…"; **4HHB**, human deoxyhaemoglobin, 4,384 atoms plus 395 heteroatoms (its hemes, and 221 waters), one model. Neither has hydrogens or alternate locations.
+- Test entries: **1CRN**, crambin, 327 atoms, one model, no heteroatoms, titled "WATER STRUCTURE OF A HYDROPHOBIC PROTEIN AT ATOMIC RESOLUTION…"; **4HHB**, human deoxyhaemoglobin, 4,384 atoms plus 395 heteroatoms (its hemes, and 221 waters), one model. Neither has hydrogens or alternate locations. **1IGT**, an intact mouse IgG2a antibody, titled "STRUCTURE OF IMMUNOGLOBULIN": 12,956 atoms, 2,522 of them hydrogens, no waters and no alternate locations, one model. Chains A to D are its two heavy and two light chains, and E and F are the sugars on the heavy chains.
 
 ## Appendix B: ideas after the setup
 
