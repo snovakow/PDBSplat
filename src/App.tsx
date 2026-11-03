@@ -2,10 +2,10 @@ import { Canvas } from '@react-three/fiber'
 import { button, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
-import { defaultOptions, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
+import { defaultOptions, examples, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
-// ?webgl in the page URL forces WebGPURenderer's WebGL 2 fallback
+// ?webgl in the page URL starts with the panel's Use WebGL 2 on
 const webglRequested = new URLSearchParams(window.location.search).has('webgl')
 
 // GPUs that offer WebGPU but can't compile the splat sort's shaders, and take Chrome's GPU process down trying.
@@ -16,7 +16,12 @@ const failingGPUs = [{ vendor: 'intel', architecture: 'gen-7' }] as const
 const fallbackAttempts = 5
 const fallbackRetryDelay = 1000
 
-async function createRenderer(canvas: object, forceWebGL: boolean, fallBack: () => void) {
+async function createRenderer(
+  canvas: object,
+  forceWebGL: boolean,
+  fallBack: () => void,
+  report: (renderer: string) => void,
+) {
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Expected an HTMLCanvasElement')
   const failingGPU = forceWebGL ? null : await knownFailingGPU()
   if (failingGPU) {
@@ -26,6 +31,8 @@ async function createRenderer(canvas: object, forceWebGL: boolean, fallBack: () 
     forceWebGL || failingGPU ? await startFallback(canvas) : await new WebGPURenderer({ canvas, antialias: true }).init()
   const webgpu = 'isWebGPUBackend' in renderer.backend
   console.info(`PDBSplat: rendering with ${webgpu ? 'WebGPU' : 'the WebGL 2 fallback'}`)
+  // Two quick toggles can leave an unmounted Canvas's renderer finishing last, so only one still on the page reports
+  if (canvas.isConnected) report(webgpu ? 'WebGPU' : failingGPU ? 'WebGL 2, as this GPU fails WebGPU' : 'WebGL 2')
   if (webgpu) watchForFailure(renderer, fallBack)
   return renderer
 }
@@ -93,9 +100,11 @@ function App() {
   }, [load])
 
   const [forceWebGL, setForceWebGL] = useState(webglRequested)
-  // The Canvas's key follows the flag, so setting it mounts a new Canvas whose factory forces the fallback
+  const [renderer, setRenderer] = useState('')
+  // The Canvas's key follows the flag, so setting it mounts a new Canvas whose factory forces the fallback, or stops forcing it
   const gl = useCallback(
-    ({ canvas }: { canvas: object }) => createRenderer(canvas, forceWebGL, () => setForceWebGL(true)),
+    ({ canvas }: { canvas: object }) =>
+      createRenderer(canvas, forceWebGL, () => setForceWebGL(true), setRenderer),
     [forceWebGL],
   )
 
@@ -104,15 +113,26 @@ function App() {
       <Canvas key={forceWebGL ? 'webgl' : 'webgpu'} gl={gl} camera={camera} flat>
         <Viewer />
       </Canvas>
-      <Panel />
+      <Panel forceWebGL={forceWebGL} setForceWebGL={setForceWebGL} renderer={renderer} />
     </>
   )
 }
 
 const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', ready: 'Ready', failed: '' }
 
-// The leva panel: the view options go to the store as they change, and the entry's details come back read-only
-function Panel() {
+// Each example as the panel lists it, such as "1CRN crambin"
+const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
+
+interface PanelProps {
+  forceWebGL: boolean
+  setForceWebGL: (forceWebGL: boolean) => void
+  // Which backend is drawing, and why when the GPU is known to fail WebGPU
+  renderer: string
+}
+
+// The leva panel: the view options go to the store as they change, and the entry's details come back read-only.
+// The Example and Use WebGL 2 handlers act only on changes made in the panel, so the values set below don't echo back
+function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   const id = useStore((s) => s.id)
   const title = useStore((s) => s.title)
   const status = useStore((s) => s.status)
@@ -122,6 +142,14 @@ function Panel() {
   const [, set] = useControls(() => {
     const { load, setOptions } = useStore.getState()
     return {
+      example: {
+        label: 'Example',
+        options: exampleOptions,
+        value: firstEntry,
+        onChange: (example: string, _path, { fromPanel }) => {
+          if (fromPanel) void load(example)
+        },
+      },
       // Without the type, leva takes an ID like 1CRN for the number 1 with the unit CRN, as in 10px
       id: { label: 'PDB ID', value: firstEntry, type: LevaInputs.STRING },
       Load: button((get) => void load(String(get('id')))),
@@ -157,11 +185,30 @@ function Panel() {
         value: defaultOptions.waters,
         onChange: (waters: boolean) => setOptions({ waters }),
       },
+      webgl: {
+        label: 'Use WebGL 2',
+        value: forceWebGL,
+        onChange: (webgl: boolean, _path, { fromPanel }) => {
+          if (fromPanel) setForceWebGL(webgl)
+        },
+      },
+      renderer: { label: 'Renderer', value: '', editable: false },
       entry: { label: 'Entry', value: '', editable: false },
       shown: { label: 'Atoms shown', value: '', editable: false },
       status: { label: 'Status', value: '', editable: false },
     }
   })
+
+  // Once an entry has loaded, the ID field shows it, and so does the example list if it's one of the examples
+  useEffect(() => {
+    if (!id) return
+    set(examples.some((example) => example.id === id) ? { id, example: id } : { id })
+  }, [set, id])
+
+  // The checkbox follows the flag, which a WebGPU failure also sets
+  useEffect(() => {
+    set({ webgl: forceWebGL, renderer: renderer || 'Starting…' })
+  }, [set, forceWebGL, renderer])
 
   useEffect(() => {
     set({

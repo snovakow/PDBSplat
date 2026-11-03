@@ -8,22 +8,24 @@ PDBSplat renders proteins from the [Protein Data Bank](https://www.rcsb.org) as 
 
 ## What it shows
 
-The page opens on 1IGT, an intact mouse antibody: four protein chains in a Y, with sugars on its two heavy chains. Any other entry loads by its four-character PDB ID, such as 1CRN, the small plant protein crambin, or 4HHB, human haemoglobin. You can find more by searching [rcsb.org](https://www.rcsb.org).
+The page opens on 1CRN, crambin, a small plant protein of 327 atoms. The panel lists five more examples, from small to large: 1BNA, a short stretch of DNA; 1EJG, crambin again with its hydrogens; 1D3Z, ubiquitin as solved by NMR; 4HHB, human haemoglobin; and 1IGT, an intact mouse antibody of almost 13,000 atoms, four protein chains in a Y. Any other entry loads by its four-character PDB ID. You can find more by searching [rcsb.org](https://www.rcsb.org).
 
-Each atom is one round splat, sized by its element's van der Waals radius and coloured in its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, iron orange. Where an entry holds several models, as NMR structures do, PDBSplat shows the first, and where an atom has alternate positions, it shows the first of them. Each entry is centred and framed to fit the window as it loads.
+Each atom is one round splat, sized by its element's van der Waals radius and coloured in its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, phosphorus and iron orange. Where an entry holds several models, as NMR structures do, PDBSplat shows the first, and where an atom has alternate positions, it shows the first of them. Each entry is centred and framed to fit the window as it loads.
 
 ## Controls
 
 - **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
 - The **panel** at the top right:
-  - **PDB ID** and **Load** fetch an entry.
+  - **Example** loads one of the six examples.
+  - **PDB ID** and **Load** fetch any other entry.
   - **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
   - **Size** scales every splat, and **Opacity** sets how much they let through.
   - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
+  - **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing.
   - **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
 - The counter at the top left shows the frame rate.
 
-PDBSplat renders with WebGPU where the browser offers it. Elsewhere, and on GPUs known to fail with it, it uses three.js's WebGL 2 fallback, which sorts the splats on the CPU and so runs slower on large entries. Adding `?webgl` to the page's address forces the fallback.
+PDBSplat renders with WebGPU where the browser offers it. Elsewhere, and on GPUs known to fail with it, it uses three.js's WebGL 2 fallback, which sorts the splats on the CPU and so runs slower on large entries. **Use WebGL 2** in the panel forces the fallback, and adding `?webgl` to the page's address starts with it on.
 
 ## Running it locally
 

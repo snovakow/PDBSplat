@@ -3,8 +3,24 @@ import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import type { Atom } from './pdb/mmcif.ts'
 
-// An intact mouse antibody: 12,956 atoms, a Y of four protein chains with two sugar chains
-export const firstEntry = '1IGT'
+// Entries the panel offers, smallest first, each of which tests something the others don't
+export const examples = [
+  // 327 atoms, protein only
+  { id: '1CRN', name: 'crambin' },
+  // 566 atoms: two DNA strands, with phosphorus and 80 waters
+  { id: '1BNA', name: 'B-DNA' },
+  // 637 atoms: crambin again, with its hydrogens and alternate locations
+  { id: '1EJG', name: 'crambin + H' },
+  // 1,231 atoms: the first of an NMR entry's models
+  { id: '1D3Z', name: 'ubiquitin NMR' },
+  // 4,779 atoms: four chains, four hemes with their iron, and 221 waters
+  { id: '4HHB', name: 'haemoglobin' },
+  // 12,956 atoms: an intact antibody, four protein chains in a Y with two sugar chains
+  { id: '1IGT', name: 'antibody' },
+] as const
+
+// Crambin, small and quick to load
+export const firstEntry: string = examples[0].id
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
