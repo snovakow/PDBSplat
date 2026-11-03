@@ -2,11 +2,28 @@
 
 **TypeScript + React + three.js + React Three Fiber + Vite + WebGPU**
 
-PDBSplat is a browser app, now being set up, for rendering proteins from the [Protein Data Bank](https://www.rcsb.org) as Gaussian splats. Each atom becomes a soft blob of colour at its place in the structure, so a protein reads as a cloud of matter rather than as balls and sticks. The splats are drawn by three.js's own WebGPU-based Gaussian splat rendering.
+PDBSplat renders proteins from the [Protein Data Bank](https://www.rcsb.org) as Gaussian splats, in the browser. Each atom becomes a soft blob of colour at its place in the structure, so a protein reads as a cloud of matter rather than as balls and sticks. The splats are drawn by three.js's own WebGPU-based Gaussian splat rendering.
 
-## Status
+**Live demo: [snovakow.com/pdbsplat](https://snovakow.com/pdbsplat/)**
 
-The app fetches a structure from the Protein Data Bank and draws each of its atoms as a splat, sized by its element's van der Waals radius and coloured in the element's CPK colour. Each entry is framed to fit the window, and you can orbit it. A control panel loads any entry by its ID, colours the atoms by element or by chain, changes their size and opacity, and shows or hides hydrogens and waters. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first release.
+## What it shows
+
+The page opens on 1IGT, an intact mouse antibody: four protein chains in a Y, with sugars on its two heavy chains. Any other entry loads by its four-character PDB ID, such as 1CRN, the small plant protein crambin, or 4HHB, human haemoglobin. You can find more by searching [rcsb.org](https://www.rcsb.org).
+
+Each atom is one round splat, sized by its element's van der Waals radius and coloured in its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, iron orange. Where an entry holds several models, as NMR structures do, PDBSplat shows the first, and where an atom has alternate positions, it shows the first of them. Each entry is centred and framed to fit the window as it loads.
+
+## Controls
+
+- **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
+- The **panel** at the top right:
+  - **PDB ID** and **Load** fetch an entry.
+  - **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
+  - **Size** scales every splat, and **Opacity** sets how much they let through.
+  - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
+  - **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
+- The counter at the top left shows the frame rate.
+
+PDBSplat renders with WebGPU where the browser offers it. Elsewhere, and on GPUs known to fail with it, it uses three.js's WebGL 2 fallback, which sorts the splats on the CPU and so runs slower on large entries. Adding `?webgl` to the page's address forces the fallback.
 
 ## Running it locally
 
@@ -18,6 +35,12 @@ npm run dev
 ```
 
 and open the address it prints.
+
+To build it, run `npm run build`. It makes a static site in `dist/` that works from any folder on any web server, and `npm run preview` serves it locally.
+
+## Status
+
+PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above. The ideas below are where it may go next, along with more colourings, naming the atom under the pointer, and playing an NMR entry's models as an animation.
 
 ## Stack
 
@@ -43,9 +66,10 @@ Around them are drei's helpers, a leva control panel, zustand for app state, and
 - **Reviewed before it's committed.** Every batch of work goes through `/commit`, a [Claude Code skill](.claude/skills/commit/SKILL.md) that serves as the final code review. It's adapted from a shared [baseline](https://github.com/snovakow/Claude-Skills/tree/main/skills/commit), and it runs in a fresh thread, so the review starts without the author's assumptions. It reads every changed line for bugs, React Three Fiber and three.js pitfalls, type and lint escapes, new dependencies, leftovers and anything that shouldn't be public. Then it runs the checks, splits the work into focused commits with descriptive messages, and keeps this README accurate.
 - **Versioned checkpoints.** Versions start at 0.0.0 and count up: each reviewed batch ends with a version commit, which marks where the next review starts.
 - **Current dependencies.** Packages and tools track their latest releases, and each review reports anything that has fallen behind.
-- **Branches and deploys.** Work lands on `development` and reaches `main` by merge. The live site will be a static build of `main`.
+- **Branches and deploys.** Work lands on `development` and reaches `main` by merge. The live site is a static build of `main`.
 
 ## Credits
 
 - Protein structures come from the [RCSB Protein Data Bank](https://www.rcsb.org).
 - [three.js](https://threejs.org), whose Gaussian splat rendering draws them.
+- The element colours are [Jmol's](https://jmol.sourceforge.net/jscolors/) CPK palette, and the van der Waals radii are mostly A. Bondi's (J. Phys. Chem., 1964).
