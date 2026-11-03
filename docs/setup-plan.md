@@ -12,7 +12,6 @@ Latest versions on 2026-10-30, when this was last checked: three.js r187 (`three
 PDBSplat/
 ├── .claude/skills/commit/      the /commit skill, a copy of the Claude-Skills baseline (section 5)
 ├── docs/setup-plan.md          this plan, deleted in Phase 7
-├── public/                     (empty to start; structures are fetched from the PDB)
 ├── src/
 │   ├── main.tsx                React root, in StrictMode
 │   ├── App.tsx                 the <Canvas> and the DOM overlays
