@@ -7,14 +7,52 @@ import { Viewer } from './viewer/Viewer.tsx'
 // ?webgl in the page URL forces WebGPURenderer's WebGL 2 fallback
 const webglRequested = new URLSearchParams(window.location.search).has('webgl')
 
+// GPUs that offer WebGPU but can't compile the splat sort's shaders, and take Chrome's GPU process down trying.
+// Haswell's Intel Iris (gen-7) fails on CountingSortReset
+const failingGPUs = [{ vendor: 'intel', architecture: 'gen-7' }] as const
+
+// The fallback's start is retried while a crashed GPU process restarts, as its WebGL 2 context comes back null till then
+const fallbackAttempts = 5
+const fallbackRetryDelay = 1000
+
 async function createRenderer(canvas: object, forceWebGL: boolean, fallBack: () => void) {
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Expected an HTMLCanvasElement')
-  const renderer = new WebGPURenderer({ canvas, antialias: true, forceWebGL })
-  await renderer.init()
+  const failingGPU = forceWebGL ? null : await knownFailingGPU()
+  if (failingGPU) {
+    console.info(`PDBSplat: this GPU (${failingGPU}) is known to fail WebGPU, so starting on the WebGL 2 fallback`)
+  }
+  const renderer =
+    forceWebGL || failingGPU ? await startFallback(canvas) : await new WebGPURenderer({ canvas, antialias: true }).init()
   const webgpu = 'isWebGPUBackend' in renderer.backend
   console.info(`PDBSplat: rendering with ${webgpu ? 'WebGPU' : 'the WebGL 2 fallback'}`)
   if (webgpu) watchForFailure(renderer, fallBack)
   return renderer
+}
+
+// Names the adapter if it's in failingGPUs, or returns null
+async function knownFailingGPU() {
+  const adapter = await navigator.gpu?.requestAdapter().catch(() => null)
+  // Chrome offered WebGPU before adapter.info, which the DOM library types as always there
+  const info = adapter?.info
+  if (!info) return null
+  const { vendor, architecture } = info
+  const failing = failingGPUs.some((gpu) => gpu.vendor === vendor && gpu.architecture === architecture)
+  return failing ? `${vendor} ${architecture}` : null
+}
+
+async function startFallback(canvas: HTMLCanvasElement) {
+  for (let attempt = 1; ; attempt++) {
+    const renderer = new WebGPURenderer({ canvas, antialias: true, forceWebGL: true })
+    try {
+      return await renderer.init()
+    } catch (error) {
+      // dispose() rethrows the failed init's error and frees nothing, so three's context-lost listener stays on the canvas
+      await renderer.dispose().catch(() => undefined)
+      if (attempt === fallbackAttempts) throw error
+      console.warn(`PDBSplat: the WebGL 2 fallback failed to start (${String(error)}), so retrying`)
+      await new Promise((resolve) => setTimeout(resolve, fallbackRetryDelay))
+    }
+  }
 }
 
 // Some GPUs offer WebGPU but can't compile three's shaders, such as the splat sort's on a 2014 Intel Iris.
