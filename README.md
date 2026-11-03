@@ -28,7 +28,7 @@ and open the address it prints.
 | [three.js](https://threejs.org) | Rendering, including its built-in Gaussian splats |
 | [React Three Fiber](https://r3f.docs.pmnd.rs) | The three.js scene, written as React components |
 | [Vite](https://vite.dev) | The dev server and the production build |
-| [WebGPU](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API) | The GPU API three.js renders with, falling back to WebGL 2 in browsers without it |
+| [WebGPU](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API) | The GPU API three.js renders with, falling back to WebGL 2 in browsers without it or on GPUs where it fails |
 
 Around them are drei's helpers, a leva control panel, zustand for app state, and Oxlint for linting.
 
