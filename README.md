@@ -6,7 +6,7 @@ PDBSplat is a browser app, now being set up, for rendering proteins from the [Pr
 
 ## Status
 
-The project is starting from an empty repository, so there's nothing to run yet. The [setup plan](docs/setup-plan.md) lays out the steps, from tooling to the first protein on screen.
+The project is scaffolded from Vite's React template, with its stack installed, but there's nothing of its own to run yet. The [setup plan](docs/setup-plan.md) lays out the steps, from tooling to the first protein on screen.
 
 ## Stack
 
