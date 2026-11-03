@@ -6,7 +6,18 @@ PDBSplat is a browser app, now being set up, for rendering proteins from the [Pr
 
 ## Status
 
-The project is scaffolded from Vite's React template, with its stack installed, but there's nothing of its own to run yet. The [setup plan](docs/setup-plan.md) lays out the steps, from tooling to the first protein on screen.
+The app shell runs: it opens a full-window 3D canvas, but it shows no protein yet. The [setup plan](docs/setup-plan.md) lays out the steps that remain, up to the first protein on screen.
+
+## Running it locally
+
+You'll need [Node.js](https://nodejs.org) 22.12 or later, which Vite 8 and drei's camera controls require. Then, from the repository's folder:
+
+```sh
+npm install
+npm run dev
+```
+
+and open the address it prints.
 
 ## Stack
 
