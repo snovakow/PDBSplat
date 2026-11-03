@@ -3,8 +3,8 @@ import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import type { Atom } from './pdb/mmcif.ts'
 
-// Crambin: 327 atoms, small and fast to load
-export const firstEntry = '1CRN'
+// An intact mouse antibody: 12,956 atoms, a Y of four protein chains with two sugar chains
+export const firstEntry = '1IGT'
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
