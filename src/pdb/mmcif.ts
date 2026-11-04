@@ -8,12 +8,17 @@ export interface Atom {
   chain: string
   residueName: string
   residueNumber: number
+  // The residue's insertion code, such as the A of 52A, or empty
+  insertion: string
   atomName: string
   altLoc: string
   occupancy: number
   bFactor: number
   model: number
   hetero: boolean
+  // In a polymer chain, as a modified residue such as selenomethionine is though it's a HETATM record;
+  // ligands, sugars and waters aren't
+  polymer: boolean
   hydrogen: boolean
   water: boolean
 }
@@ -24,6 +29,11 @@ export interface Structure {
 }
 
 const waterNames = new Set(['HOH', 'WAT', 'H2O', 'DOD'])
+
+// Names an atom's residue by chain, number and insertion code, so that an inserted residue such as 52A stays apart from 52
+export function residueKey(atom: Atom) {
+  return `${atom.chain} ${atom.residueNumber} ${atom.insertion}`
+}
 
 // Walks CIF's tokens: whitespace-separated values, quoted strings and semicolon text fields
 class Tokenizer {
@@ -165,6 +175,9 @@ function atomReader(columns: string[]) {
   const occupancy = column('occupancy')
   const bFactor = column('B_iso_or_equiv')
   const model = column('pdbx_PDB_model_num')
+  // A polymer's residues each have a place in its sequence, and ligands, sugars and waters have none.
+  // A file without the column falls back on the record type, which takes modified residues for ligands
+  const sequenced = index('label_seq_id') >= 0
 
   let firstModel: string | null = null
   // Each residue keeps the first alternate location it lists, so its atoms come from one conformation
@@ -191,12 +204,14 @@ function atomReader(columns: string[]) {
       chain: chain(row),
       residueName: name,
       residueNumber: Number(authSeq(row) || labelSeq(row) || 0),
+      insertion: insertion(row),
       atomName: atomName(row),
       altLoc: alt,
       occupancy: Number(occupancy(row) || 1),
       bFactor: Number(bFactor(row) || 0),
       model: Number(model(row) || 1),
       hetero: group(row) === 'HETATM',
+      polymer: sequenced ? labelSeq(row) !== '' : group(row) === 'ATOM',
       hydrogen: symbol === 'H' || symbol === 'D',
       water: waterNames.has(name),
     })

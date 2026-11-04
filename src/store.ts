@@ -25,7 +25,10 @@ export const firstEntry: string = examples[0].id
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
-export type ColorBy = 'element' | 'chain'
+export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow'
+
+// Which atoms the splat styles keep in focus, fading the rest
+export type Focus = 'all' | 'ligands' | 'backbone'
 
 // What the panel sets and the scene draws
 export interface ViewOptions {
@@ -48,6 +51,11 @@ export interface ViewOptions {
   outline: number
   // How far the far side of the structure darkens, from none at 0 to black at 1
   depthCue: number
+  // How far each splat spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives
+  thermal: number
+  focus: Focus
+  // What an atom out of focus keeps of its alpha
+  fade: number
 }
 
 export const defaultOptions: ViewOptions = {
@@ -64,6 +72,9 @@ export const defaultOptions: ViewOptions = {
   shininess: 24,
   outline: 0,
   depthCue: 0,
+  thermal: 0,
+  focus: 'all',
+  fade: 0.15,
 }
 
 export function isShown(atom: Atom, options: Pick<ViewOptions, 'hydrogens' | 'waters'>) {

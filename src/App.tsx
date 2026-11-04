@@ -2,7 +2,16 @@ import { Canvas } from '@react-three/fiber'
 import { button, folder, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
-import { defaultOptions, examples, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
+import {
+  defaultOptions,
+  examples,
+  firstEntry,
+  isShown,
+  useStore,
+  type ColorBy,
+  type Focus,
+  type Status,
+} from './store.ts'
 import { styles, type Style } from './viewer/styles.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
@@ -124,8 +133,19 @@ const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', re
 // Each example as the panel lists it, such as "1CRN crambin"
 const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
 
-// The Style chooser's full path in the panel, as a render test reads nothing from a bare key inside a folder
+// The full paths in the panel of the choosers that other controls show for, as a render test reads nothing from a
+// bare key inside a folder
 const stylePath = 'Look.style'
+const focusPath = 'Atoms.focus'
+
+// The Colour by and Focus choices, each by its label in the panel
+const colorByOptions = {
+  element: 'element',
+  chain: 'chain',
+  'B-factor': 'bfactor',
+  rainbow: 'rainbow',
+} satisfies Record<string, ColorBy>
+const focusOptions = { all: 'all', ligands: 'ligands', backbone: 'backbone' } satisfies Record<string, Focus>
 
 interface PanelProps {
   forceWebGL: boolean
@@ -240,7 +260,7 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       Colour: folder({
         colorBy: {
           label: 'Colour by',
-          options: ['element', 'chain'] satisfies ColorBy[],
+          options: colorByOptions,
           value: defaultOptions.colorBy,
           onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
         },
@@ -255,6 +275,32 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           label: 'Waters',
           value: defaultOptions.waters,
           onChange: (waters: boolean) => setOptions({ waters }),
+        },
+        // Thermal, Focus and Fade act on splats, so the surface leaves them out
+        thermal: {
+          label: 'Thermal',
+          value: defaultOptions.thermal,
+          min: 0,
+          max: 3,
+          step: 0.05,
+          render: (get) => get(stylePath) !== 'surface',
+          onChange: (thermal: number) => setOptions({ thermal }),
+        },
+        focus: {
+          label: 'Focus',
+          options: focusOptions,
+          value: defaultOptions.focus,
+          render: (get) => get(stylePath) !== 'surface',
+          onChange: (focus: Focus) => setOptions({ focus }),
+        },
+        fade: {
+          label: 'Fade',
+          value: defaultOptions.fade,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          render: (get) => get(stylePath) !== 'surface' && get(focusPath) !== 'all',
+          onChange: (fade: number) => setOptions({ fade }),
         },
       }),
       Scene: folder({

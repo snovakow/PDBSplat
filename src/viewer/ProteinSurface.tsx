@@ -149,8 +149,8 @@ export function ProteinSurface({ bounds }: Props) {
 }
 
 // Each vertex takes the colour of the atom adding the most density there
-function paint({ colors, shown, owners }: Surface, colorBy: ColorBy) {
-  const atomRgb = atomColors(shown, colorBy)
+function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy) {
+  const atomRgb = atomColors(shown, colorBy, atoms)
   const rgb = colors.array
   for (let v = 0; v < owners.length; v++) {
     const a = owners[v] * 3
