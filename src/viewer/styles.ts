@@ -1,15 +1,15 @@
 import type { NodeMaterial } from 'three/webgpu'
-import { sphereColor } from './sphereColor.ts'
+import { softColor, sphereColor } from './shading.ts'
 
 // The ways the panel's Style chooser can draw the atoms, in its order; an entry added here appears there.
-// A splats style draws GaussianSplats, whose shading colorNode replaces, or null keeps as a soft Gaussian falloff.
+// A splats style draws GaussianSplats, shaded by its colorNode in place of three's own.
 // The surface style meshes the atoms by marching cubes instead
 type StyleEntry =
-  | { id: string; label: string; kind: 'splats'; colorNode: NodeMaterial['colorNode'] }
+  | { id: string; label: string; kind: 'splats'; colorNode: NonNullable<NodeMaterial['colorNode']> }
   | { id: string; label: string; kind: 'surface' }
 
 export const styles = [
-  { id: 'soft', label: 'soft', kind: 'splats', colorNode: null },
+  { id: 'soft', label: 'soft', kind: 'splats', colorNode: softColor },
   { id: 'spheres', label: 'spheres', kind: 'splats', colorNode: sphereColor },
   { id: 'surface', label: 'surface', kind: 'surface' },
 ] as const satisfies readonly StyleEntry[]

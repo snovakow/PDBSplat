@@ -15,16 +15,19 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
 ## Controls
 
 - **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
-- The **panel** at the top right:
-  - **Example** loads one of the six examples.
-  - **PDB ID** and **Load** fetch any other entry.
-  - **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
-  - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes.
-  - **Resolution**, for the surface only, sets how finely it's meshed, in grid points per ångström: from 0.5 to 4, where higher shows more detail, and takes longer. Large entries are meshed more coarsely where needed, to keep within about ten million triangles.
-  - **Size** scales every atom, and **Opacity** sets how much they let through, in every style.
-  - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
-  - **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing.
-  - **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
+- The **panel** at the top right. Its folders hide the controls the chosen style doesn't use:
+  - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
+  - **Look:**
+    - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes.
+    - **Resolution**, for the surface only, sets how finely it's meshed, in grid points per ångström: from 0.5 to 4, where higher shows more detail, and takes longer. Large entries are meshed more coarsely where needed, to keep within about ten million triangles.
+    - **Size** scales every atom, and **Opacity** sets how much they let through, in every style.
+    - **Hardness**, for the soft splats, firms their edges, from a soft Gaussian falloff to a flat disc.
+    - **Shading**, **Highlight**, **Shininess** and **Outline**, for the spheres, set how far each darkens towards its rim, how bright and how tight its highlight is, and the width of an inked rim that outlines it.
+  - **Colour:** **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
+  - **Atoms:** **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
+  - **Scene:** **Depth cue** darkens the far side of the structure, in every style, so its depth reads at a glance. It stays tied to the structure as you orbit, zoom or pan.
+  - **Info:** **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing. **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
+- Every slider but **Size** and **Resolution** takes effect at once, as it doesn't rebuild the atoms.
 - The counter at the top left shows the frame rate.
 
 PDBSplat renders with WebGPU where the browser offers it. Elsewhere, and on GPUs known to fail with it, it uses three.js's WebGL 2 fallback, which sorts the splats on the CPU and so runs slower on large entries. **Use WebGL 2** in the panel forces the fallback, and adding `?webgl` to the page's address starts with it on.

@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { button, LevaInputs, useControls } from 'leva'
+import { button, folder, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
 import { defaultOptions, examples, firstEntry, isShown, useStore, type ColorBy, type Status } from './store.ts'
@@ -124,6 +124,9 @@ const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', re
 // Each example as the panel lists it, such as "1CRN crambin"
 const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
 
+// The Style chooser's full path in the panel, as a render test reads nothing from a bare key inside a folder
+const stylePath = 'Look.style'
+
 interface PanelProps {
   forceWebGL: boolean
   setForceWebGL: (forceWebGL: boolean) => void
@@ -154,65 +157,131 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       // Without the type, leva takes an ID like 1CRN for the number 1 with the unit CRN, as in 10px
       id: { label: 'PDB ID', value: firstEntry, type: LevaInputs.STRING },
       Load: button((get) => void load(String(get('id')))),
-      colorBy: {
-        label: 'Colour by',
-        options: ['element', 'chain'] satisfies ColorBy[],
-        value: defaultOptions.colorBy,
-        onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
-      },
-      style: {
-        label: 'Style',
-        options: Object.fromEntries(styles.map((style) => [style.label, style.id])),
-        value: defaultOptions.style,
-        onChange: (style: Style) => setOptions({ style }),
-      },
-      resolution: {
-        label: 'Resolution',
-        value: defaultOptions.resolution,
-        min: 0.5,
-        max: 4,
-        step: 0.1,
-        // Only the surface has a resolution
-        render: (get) => get('style') === 'surface',
-        onChange: (resolution: number) => setOptions({ resolution }),
-      },
-      scale: {
-        label: 'Size',
-        value: defaultOptions.scale,
-        min: 0.25,
-        max: 2,
-        step: 0.05,
-        onChange: (scale: number) => setOptions({ scale }),
-      },
-      opacity: {
-        label: 'Opacity',
-        value: defaultOptions.opacity,
-        min: 0,
-        max: 1,
-        step: 0.05,
-        onChange: (opacity: number) => setOptions({ opacity }),
-      },
-      hydrogens: {
-        label: 'Hydrogens',
-        value: defaultOptions.hydrogens,
-        onChange: (hydrogens: boolean) => setOptions({ hydrogens }),
-      },
-      waters: {
-        label: 'Waters',
-        value: defaultOptions.waters,
-        onChange: (waters: boolean) => setOptions({ waters }),
-      },
-      webgl: {
-        label: 'Use WebGL 2',
-        value: forceWebGL,
-        onChange: (webgl: boolean, _path, { fromPanel }) => {
-          if (fromPanel) setForceWebGL(webgl)
+      Look: folder({
+        style: {
+          label: 'Style',
+          options: Object.fromEntries(styles.map((style) => [style.label, style.id])),
+          value: defaultOptions.style,
+          onChange: (style: Style) => setOptions({ style }),
         },
-      },
-      renderer: { label: 'Renderer', value: '', editable: false },
-      entry: { label: 'Entry', value: '', editable: false },
-      shown: { label: 'Atoms shown', value: '', editable: false },
-      status: { label: 'Status', value: '', editable: false },
+        resolution: {
+          label: 'Resolution',
+          value: defaultOptions.resolution,
+          min: 0.5,
+          max: 4,
+          step: 0.1,
+          // Only the surface has a resolution
+          render: (get) => get(stylePath) === 'surface',
+          onChange: (resolution: number) => setOptions({ resolution }),
+        },
+        scale: {
+          label: 'Size',
+          value: defaultOptions.scale,
+          min: 0.25,
+          max: 2,
+          step: 0.05,
+          onChange: (scale: number) => setOptions({ scale }),
+        },
+        opacity: {
+          label: 'Opacity',
+          value: defaultOptions.opacity,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          onChange: (opacity: number) => setOptions({ opacity }),
+        },
+        hardness: {
+          label: 'Hardness',
+          value: defaultOptions.hardness,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          // Spheres always keep a hard edge
+          render: (get) => get(stylePath) === 'soft',
+          onChange: (hardness: number) => setOptions({ hardness }),
+        },
+        shading: {
+          label: 'Shading',
+          value: defaultOptions.shading,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          render: (get) => get(stylePath) === 'spheres',
+          onChange: (shading: number) => setOptions({ shading }),
+        },
+        highlight: {
+          label: 'Highlight',
+          value: defaultOptions.highlight,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          render: (get) => get(stylePath) === 'spheres',
+          onChange: (highlight: number) => setOptions({ highlight }),
+        },
+        shininess: {
+          label: 'Shininess',
+          value: defaultOptions.shininess,
+          min: 1,
+          max: 64,
+          step: 1,
+          render: (get) => get(stylePath) === 'spheres',
+          onChange: (shininess: number) => setOptions({ shininess }),
+        },
+        outline: {
+          label: 'Outline',
+          value: defaultOptions.outline,
+          min: 0,
+          max: 0.3,
+          step: 0.01,
+          render: (get) => get(stylePath) === 'spheres',
+          onChange: (outline: number) => setOptions({ outline }),
+        },
+      }),
+      Colour: folder({
+        colorBy: {
+          label: 'Colour by',
+          options: ['element', 'chain'] satisfies ColorBy[],
+          value: defaultOptions.colorBy,
+          onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
+        },
+      }),
+      Atoms: folder({
+        hydrogens: {
+          label: 'Hydrogens',
+          value: defaultOptions.hydrogens,
+          onChange: (hydrogens: boolean) => setOptions({ hydrogens }),
+        },
+        waters: {
+          label: 'Waters',
+          value: defaultOptions.waters,
+          onChange: (waters: boolean) => setOptions({ waters }),
+        },
+      }),
+      Scene: folder({
+        depthCue: {
+          label: 'Depth cue',
+          value: defaultOptions.depthCue,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          onChange: (depthCue: number) => setOptions({ depthCue }),
+        },
+      }),
+      Info: folder({
+        webgl: {
+          label: 'Use WebGL 2',
+          value: forceWebGL,
+          // Inside a folder, leva's types leave a transient control out of set, which the effect below calls with it
+          transient: false,
+          onChange: (webgl: boolean, _path, { fromPanel }) => {
+            if (fromPanel) setForceWebGL(webgl)
+          },
+        },
+        renderer: { label: 'Renderer', value: '', editable: false },
+        entry: { label: 'Entry', value: '', editable: false },
+        shown: { label: 'Atoms shown', value: '', editable: false },
+        status: { label: 'Status', value: '', editable: false },
+      }),
     }
   })
 

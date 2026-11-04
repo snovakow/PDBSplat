@@ -5,6 +5,7 @@ import { useBounds } from './bounds.ts'
 import { Framing } from './Framing.tsx'
 import { ProteinSplats } from './ProteinSplats.tsx'
 import { ProteinSurface } from './ProteinSurface.tsx'
+import { ShadingUniforms } from './ShadingUniforms.tsx'
 import { styleOf } from './styles.ts'
 
 export function Viewer() {
@@ -16,6 +17,7 @@ export function Viewer() {
       <OrbitControls ref={controlsRef} makeDefault />
       <Stats />
       <Framing controlsRef={controlsRef} bounds={bounds} />
+      <ShadingUniforms bounds={bounds} />
       {style.kind === 'splats' ? (
         <ProteinSplats bounds={bounds} colorNode={style.colorNode} />
       ) : (

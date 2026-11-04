@@ -38,6 +38,16 @@ export interface ViewOptions {
   waters: boolean
   // The surface style's grid points per ångström: higher meshes it more finely, and more slowly
   resolution: number
+  // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1
+  hardness: number
+  // The spheres style's lighting: how much the shade falls off towards the rim, the highlight's strength,
+  // how tight the highlight is, and the width of an ink rim, as a fraction of each sphere's radius
+  shading: number
+  highlight: number
+  shininess: number
+  outline: number
+  // How far the far side of the structure darkens, from none at 0 to black at 1
+  depthCue: number
 }
 
 export const defaultOptions: ViewOptions = {
@@ -48,6 +58,12 @@ export const defaultOptions: ViewOptions = {
   hydrogens: true,
   waters: false,
   resolution: 2,
+  hardness: 0,
+  shading: 0.75,
+  highlight: 0.35,
+  shininess: 24,
+  outline: 0,
+  depthCue: 0,
 }
 
 export function isShown(atom: Atom, options: Pick<ViewOptions, 'hydrogens' | 'waters'>) {
