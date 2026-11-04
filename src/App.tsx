@@ -8,6 +8,7 @@ import {
   firstEntry,
   isShown,
   useStore,
+  type Blend,
   type ColorBy,
   type Focus,
   type Status,
@@ -133,12 +134,13 @@ const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', re
 // Each example as the panel lists it, such as "1CRN crambin"
 const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
 
-// The full paths in the panel of the choosers that other controls show for, as a render test reads nothing from a
-// bare key inside a folder
+// The full paths in the panel of the controls that others show for, as a render test reads nothing from a bare key
+// inside a folder
 const stylePath = 'Look.style'
 const focusPath = 'Atoms.focus'
+const bloomPath = 'Scene.bloom'
 
-// The Colour by and Focus choices, each by its label in the panel
+// The Colour by, Focus and Blend choices, each by its label in the panel
 const colorByOptions = {
   element: 'element',
   chain: 'chain',
@@ -146,6 +148,7 @@ const colorByOptions = {
   rainbow: 'rainbow',
 } satisfies Record<string, ColorBy>
 const focusOptions = { all: 'all', ligands: 'ligands', backbone: 'backbone' } satisfies Record<string, Focus>
+const blendOptions = { normal: 'normal', glow: 'glow' } satisfies Record<string, Blend>
 
 interface PanelProps {
   forceWebGL: boolean
@@ -256,6 +259,14 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           render: (get) => get(stylePath) === 'spheres',
           onChange: (outline: number) => setOptions({ outline }),
         },
+        // Blending acts on splats, so the surface leaves it out
+        blend: {
+          label: 'Blend',
+          options: blendOptions,
+          value: defaultOptions.blend,
+          render: (get) => get(stylePath) !== 'surface',
+          onChange: (blend: Blend) => setOptions({ blend }),
+        },
       }),
       Colour: folder({
         colorBy: {
@@ -263,6 +274,14 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           options: colorByOptions,
           value: defaultOptions.colorBy,
           onChange: (colorBy: ColorBy) => setOptions({ colorBy }),
+        },
+        burial: {
+          label: 'Burial',
+          value: defaultOptions.burial,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          onChange: (burial: number) => setOptions({ burial }),
         },
       }),
       Atoms: folder({
@@ -311,6 +330,34 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           max: 1,
           step: 0.05,
           onChange: (depthCue: number) => setOptions({ depthCue }),
+        },
+        bloom: {
+          label: 'Bloom',
+          value: defaultOptions.bloom,
+          min: 0,
+          max: 3,
+          step: 0.05,
+          onChange: (bloom: number) => setOptions({ bloom }),
+        },
+        // Bloom's spread and threshold matter only while it's on. They show just below it, which says what they belong
+        // to, so their labels stay short enough for the panel's label column
+        bloomRadius: {
+          label: 'Radius',
+          value: defaultOptions.bloomRadius,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          render: (get) => get(bloomPath) > 0,
+          onChange: (bloomRadius: number) => setOptions({ bloomRadius }),
+        },
+        bloomThreshold: {
+          label: 'Threshold',
+          value: defaultOptions.bloomThreshold,
+          min: 0,
+          max: 1,
+          step: 0.01,
+          render: (get) => get(bloomPath) > 0,
+          onChange: (bloomThreshold: number) => setOptions({ bloomThreshold }),
         },
       }),
       Info: folder({

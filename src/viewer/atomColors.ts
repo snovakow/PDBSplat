@@ -1,6 +1,8 @@
 import { Color, SRGBColorSpace } from 'three'
+import { burial } from '../pdb/burial.ts'
 import { elementColor } from '../pdb/elements.ts'
 import { residueKey, type Atom } from '../pdb/mmcif.ts'
+import { percentile } from '../pdb/percentile.ts'
 import type { ColorBy } from '../store.ts'
 
 // The chain and rainbow colourings' saturation and lightness, in three's HSL over the working colour space
@@ -16,13 +18,15 @@ const lowPercentile = 0.05
 const highPercentile = 0.95
 
 // Each atom's colour, by element, chain, B-factor or place along its chain, as r, g, b per atom in three's working
-// colour space. The entry's atoms set the B-factor spread and the rainbow's ends, so that hiding atoms recolours none
-export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: readonly Atom[]) {
+// colour space, darkened by Burial's share of how buried the atom is. The entry's atoms set the B-factor spread, the
+// rainbow's ends and the burial, so that hiding atoms recolours none
+export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: readonly Atom[], burialStrength: number) {
   const colors = new Float32Array(atoms.length * 3)
   const chainColors = new Map<string, Color>()
   const color = new Color()
   const spread = colorBy === 'bfactor' ? bFactorSpread(entry) : null
   const positions = colorBy === 'rainbow' ? rainbowPositions(entry) : null
+  const buried = burialStrength > 0 ? burial(entry).values : null
   atoms.forEach((atom, i) => {
     if (colorBy === 'chain') color.copy(chainColor(chainColors, atom.chain))
     else if (spread) bFactorColor(color, spread, atom.bFactor)
@@ -32,6 +36,7 @@ export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: read
       if (position === undefined) color.copy(elementColor(atom.element))
       else color.setHSL(rainbowStart + (rainbowEnd - rainbowStart) * position, saturation, lightness)
     }
+    if (buried) color.multiplyScalar(1 - burialStrength * (buried.get(atom) ?? 0))
     colors[i * 3] = color.r
     colors[i * 3 + 1] = color.g
     colors[i * 3 + 2] = color.b
@@ -66,15 +71,6 @@ export function bFactorSpread(entry: readonly Atom[]): Spread {
     spreads.set(entry, spread)
   }
   return spread
-}
-
-// Interpolates between the two nearest of the sorted values, or gives 0 for none
-function percentile(sorted: Float64Array, fraction: number) {
-  if (sorted.length === 0) return 0
-  const place = fraction * (sorted.length - 1)
-  const below = Math.floor(place)
-  const above = Math.min(below + 1, sorted.length - 1)
-  return sorted[below] + (sorted[above] - sorted[below]) * (place - below)
 }
 
 // Blue at the low percentile and below, through white, to red at the high one and above, mixed in sRGB.

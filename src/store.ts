@@ -30,6 +30,9 @@ export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow'
 // Which atoms the splat styles keep in focus, fading the rest
 export type Focus = 'all' | 'ligands' | 'backbone'
 
+// How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow
+export type Blend = 'normal' | 'glow'
+
 // What the panel sets and the scene draws
 export interface ViewOptions {
   colorBy: ColorBy
@@ -51,12 +54,25 @@ export interface ViewOptions {
   outline: number
   // How far the far side of the structure darkens, from none at 0 to black at 1
   depthCue: number
+  // How far buried atoms darken, from none at 0 to black for the most buried at 1
+  burial: number
+  blend: Blend
+  // The strength of a glow spread around bright parts of the scene, how far it spreads, from 0 to 1, and the
+  // brightness, from 0 to 1, below which nothing glows
+  bloom: number
+  bloomRadius: number
+  bloomThreshold: number
   // How far each splat spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives
   thermal: number
   focus: Focus
   // What an atom out of focus keeps of its alpha
   fade: number
 }
+
+// Bloom's spread and threshold until the panel moves them, chosen by eye on the antibody example in glow: a halo
+// that hazes the space around the structure, from its dense core and bright atoms but not its faint edges
+const bloomRadiusDefault = 0.4
+const bloomThresholdDefault = 0.3
 
 export const defaultOptions: ViewOptions = {
   colorBy: 'element',
@@ -72,6 +88,11 @@ export const defaultOptions: ViewOptions = {
   shininess: 24,
   outline: 0,
   depthCue: 0,
+  burial: 0,
+  blend: 'normal',
+  bloom: 0,
+  bloomRadius: bloomRadiusDefault,
+  bloomThreshold: bloomThresholdDefault,
   thermal: 0,
   focus: 'all',
   fade: 0.15,

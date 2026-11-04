@@ -1,5 +1,6 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect } from 'react'
+import { AdditiveBlending } from 'three'
 import { GaussianSplat } from 'three/addons/objects/GaussianSplat.js'
 import {
   createGaussianSplatGeometry,
@@ -12,6 +13,7 @@ import { isShown, useStore } from '../store.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { focusTest } from './focus.ts'
+import { asWebGPU } from './renderer.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
@@ -40,6 +42,8 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const thermal = useStore((s) => s.options.thermal)
   const focus = useStore((s) => s.options.focus)
   const fade = useStore((s) => s.options.fade)
+  const burial = useStore((s) => s.options.burial)
+  const blend = useStore((s) => s.options.blend)
 
   useEffect(() => {
     const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters }))
@@ -48,7 +52,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     const centers = new Float32Array(shown.length * 3)
     const covariances = new Float32Array(shown.length * 6)
     const colors = new Uint8ClampedArray(shown.length * 4)
-    const rgb = atomColors(shown, colorBy, atoms)
+    const rgb = atomColors(shown, colorBy, atoms, burial)
     const inFocus = focusTest(atoms, focus)
 
     shown.forEach((atom, i) => {
@@ -65,11 +69,21 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       writeColorBytes(colors, i * 4, rgb[i * 3] * 255, rgb[i * 3 + 1] * 255, rgb[i * 3 + 2] * 255, alpha)
     })
 
+    // Added light doesn't depend on the order it's drawn in, so glowing splats aren't sorted as the camera moves
+    const glow = blend === 'glow'
     const geometry = createGaussianSplatGeometry(centers, covariances, colors)
-    const splat = new GaussianSplat(geometry, { autoSort: true })
+    const splat = new GaussianSplat(geometry, { autoSort: !glow })
     splat.material.colorNode = colorNode
-    const { scene } = get()
+    if (glow) splat.material.blending = AdditiveBlending
+    const { scene, gl, camera } = get()
     scene.add(splat)
+    // On the WebGL 2 fallback, only a sort moves the splat's data into the textures its shader reads, and the shader
+    // is built for one or the other on its first draw, so an unsorted splat sorts once now, before it's ever drawn.
+    // On WebGPU its draw order starts as every splat in turn
+    if (glow) {
+      const renderer = asWebGPU(gl)
+      if (!('isWebGPUBackend' in renderer.backend)) splat.updateSort(renderer, camera)
+    }
 
     // GaussianSplat has no dispose(): its storage buffers go when it's garbage-collected, so nothing keeps it
     return () => {
@@ -78,7 +92,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       splat.material.dispose()
       geometry.dispose()
     }
-  }, [get, atoms, bounds, colorBy, scale, hydrogens, waters, thermal, focus, fade, colorNode])
+  }, [get, atoms, bounds, colorBy, scale, hydrogens, waters, thermal, focus, fade, burial, blend, colorNode])
 
   return null
 }

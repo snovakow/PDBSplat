@@ -23,18 +23,23 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
     - **Size** scales every atom, and **Opacity** sets how much they let through, in every style.
     - **Hardness**, for the soft splats, firms their edges, from a soft Gaussian falloff to a flat disc.
     - **Shading**, **Highlight**, **Shininess** and **Outline**, for the spheres, set how far each darkens towards its rim, how bright and how tight its highlight is, and the width of an inked rim that outlines it.
-  - **Colour:** **Colour by** colours each atom by one of four things, in every style:
-    - its **element**, as described above
-    - its **chain**, which gives every chain its own hue
-    - its **B-factor**, which says how far the atom moves about its place: blue for the entry's stillest atoms, through white, to red for its most mobile, so a protein's ordered core reads blue and its loose loops red
-    - a **rainbow** along each chain, from blue at its start to red at its end, while ligands and waters keep their element colours
+    - **Blend**, for the soft splats and the spheres, lays each splat over what's behind it, or, in glow, adds its light to it, so dense parts glow like an X-ray, with **Opacity** setting how brightly.
+  - **Colour:**
+    - **Colour by** colours each atom by one of four things, in every style:
+      - its **element**, as described above
+      - its **chain**, which gives every chain its own hue
+      - its **B-factor**, which says how far the atom moves about its place: blue for the entry's stillest atoms, through white, to red for its most mobile, so a protein's ordered core reads blue and its loose loops red
+      - a **rainbow** along each chain, from blue at its start to red at its end, while ligands and waters keep their element colours
+    - **Burial** darkens each atom by how deeply the atoms around it bury it, in every style, so a protein's core falls into shadow while its surface stays bright.
   - **Atoms:**
     - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
     - **Thermal**, for the soft splats and the spheres, blurs or swells each atom by how far its B-factor says it moves, so mobile loops spread out while the core stays crisp.
     - **Focus**, for the soft splats and the spheres, keeps every atom in focus, or only the ligands and the residues that hold them, or only the backbone: a protein's main chain, or a nucleic acid's sugars and phosphates. **Fade** sets how faintly the atoms out of focus are drawn.
-  - **Scene:** **Depth cue** darkens the far side of the structure, in every style, so its depth reads at a glance. It stays tied to the structure as you orbit, zoom or pan.
+  - **Scene:**
+    - **Depth cue** darkens the far side of the structure, in every style, so its depth reads at a glance. It stays tied to the structure as you orbit, zoom or pan.
+    - **Bloom** spreads a soft glow around the bright parts of the scene, in every style. While it's on, **Radius** and **Threshold** below it set how far the glow spreads and how bright a part must be to give off any.
   - **Info:** **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing. **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
-- Every slider but **Size**, **Resolution**, **Thermal** and **Fade** takes effect at once, as it doesn't rebuild the atoms.
+- Every slider but **Size**, **Resolution**, **Thermal**, **Fade** and **Burial** takes effect at once, as it doesn't rebuild the atoms.
 - The counter at the top left shows the frame rate.
 
 PDBSplat renders with WebGPU where the browser offers it. Elsewhere, and on GPUs known to fail with it, it uses three.js's WebGL 2 fallback, which sorts the splats on the CPU and so runs slower on large entries. **Use WebGL 2** in the panel forces the fallback, and adding `?webgl` to the page's address starts with it on.

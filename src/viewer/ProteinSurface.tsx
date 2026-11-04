@@ -29,6 +29,7 @@ export function ProteinSurface({ bounds }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
   const colorBy = useStore((s) => s.options.colorBy)
+  const burial = useStore((s) => s.options.burial)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
   const hydrogens = useStore((s) => s.options.hydrogens)
@@ -107,7 +108,8 @@ export function ProteinSurface({ bounds }: Props) {
           shown,
           owners: built.owners,
         }
-        paint(next, useStore.getState().options.colorBy)
+        const { options } = useStore.getState()
+        paint(next, options.colorBy, options.burial)
         if (surface.current) discard(scene, surface.current)
         scene.add(next.depth, next.mesh)
         surface.current = next
@@ -121,10 +123,10 @@ export function ProteinSurface({ bounds }: Props) {
     return () => request.cancel()
   }, [get, atoms, bounds, scale, hydrogens, waters, resolution])
 
-  // A new colouring repaints the vertices from their atoms, without meshing again
+  // A new colouring or Burial repaints the vertices from their atoms, without meshing again
   useEffect(() => {
-    if (surface.current) paint(surface.current, colorBy)
-  }, [colorBy])
+    if (surface.current) paint(surface.current, colorBy, burial)
+  }, [colorBy, burial])
 
   // Below full opacity, the depth pass draws first, as it's opaque, and hides every layer but the nearest
   useEffect(() => {
@@ -149,8 +151,8 @@ export function ProteinSurface({ bounds }: Props) {
 }
 
 // Each vertex takes the colour of the atom adding the most density there
-function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy) {
-  const atomRgb = atomColors(shown, colorBy, atoms)
+function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy, burial: number) {
+  const atomRgb = atomColors(shown, colorBy, atoms, burial)
   const rgb = colors.array
   for (let v = 0; v < owners.length; v++) {
     const a = owners[v] * 3
