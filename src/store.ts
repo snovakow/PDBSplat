@@ -36,11 +36,21 @@ export interface ViewOptions {
   opacity: number
   hydrogens: boolean
   waters: boolean
+  // The surface style's grid points per ångström: higher meshes it more finely, and more slowly
+  resolution: number
 }
 
-export const defaultOptions: ViewOptions = { colorBy: 'element', style: 'soft', scale: 1, opacity: 0.9, hydrogens: true, waters: false }
+export const defaultOptions: ViewOptions = {
+  colorBy: 'element',
+  style: 'soft',
+  scale: 1,
+  opacity: 0.9,
+  hydrogens: true,
+  waters: false,
+  resolution: 2,
+}
 
-export function isShown(atom: Atom, options: ViewOptions) {
+export function isShown(atom: Atom, options: Pick<ViewOptions, 'hydrogens' | 'waters'>) {
   return (options.hydrogens || !atom.hydrogen) && (options.waters || !atom.water)
 }
 

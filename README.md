@@ -19,8 +19,9 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
   - **Example** loads one of the six examples.
   - **PDB ID** and **Load** fetch any other entry.
   - **Colour by** switches between each atom's element and its chain, which gives every chain its own hue.
-  - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model.
-  - **Size** scales every splat, and **Opacity** sets how much they let through.
+  - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes.
+  - **Resolution**, for the surface only, sets how finely it's meshed, in grid points per ångström: from 0.5 to 4, where higher shows more detail, and takes longer. Large entries are meshed more coarsely where needed, to keep within about ten million triangles.
+  - **Size** scales every atom, and **Opacity** sets how much they let through, in every style.
   - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
   - **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing.
   - **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
@@ -74,5 +75,5 @@ Around them are drei's helpers, a leva control panel, zustand for app state, and
 ## Credits
 
 - Protein structures come from the [RCSB Protein Data Bank](https://www.rcsb.org).
-- [three.js](https://threejs.org), whose Gaussian splat rendering draws them.
+- [three.js](https://threejs.org), whose Gaussian splat rendering draws them, and whose copy of Paul Bourke's marching-cubes tables meshes the surface.
 - The element colours are [Jmol's](https://jmol.sourceforge.net/jscolors/) CPK palette, and the van der Waals radii are mostly A. Bondi's (J. Phys. Chem., 1964).

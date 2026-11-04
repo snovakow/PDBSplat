@@ -166,6 +166,16 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
         value: defaultOptions.style,
         onChange: (style: Style) => setOptions({ style }),
       },
+      resolution: {
+        label: 'Resolution',
+        value: defaultOptions.resolution,
+        min: 0.5,
+        max: 4,
+        step: 0.1,
+        // Only the surface has a resolution
+        render: (get) => get('style') === 'surface',
+        onChange: (resolution: number) => setOptions({ resolution }),
+      },
       scale: {
         label: 'Size',
         value: defaultOptions.scale,
