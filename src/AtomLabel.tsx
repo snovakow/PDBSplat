@@ -5,10 +5,12 @@ import { useStore } from './store.ts'
 // window's far edges
 const pointerGap = 14
 
-// The atom under the pointer, named in a label beside it: its name and element, its residue and chain, its B-factor,
-// and its occupancy when the atom is only partly there
+// The atom under the pointer, named in a label beside it: its name and element, and its alternate ID if it has one;
+// its residue with any insertion code, its chain, and its model when the entry has more than one; its B-factor, and its
+// occupancy when the atom is only partly there
 export function AtomLabel() {
   const atom = useStore((s) => s.hovered)
+  const manyModels = useStore((s) => s.models.length > 1)
   const label = useRef<HTMLDivElement>(null)
   const pointer = useRef({ x: 0, y: 0 })
 
@@ -33,11 +35,18 @@ export function AtomLabel() {
         <>
           <div>
             <strong>{atom.atomName}</strong> <span className="atom-label-detail">{atom.element}</span>
+            {atom.altLoc && (
+              <>
+                {' '}
+                <span className="atom-label-detail">alternate</span> {atom.altLoc}
+              </>
+            )}
           </div>
           <div>
             {atom.residueName} {atom.residueNumber}
             {atom.insertion}
             {atom.chain && <span className="atom-label-detail"> chain {atom.chain}</span>}
+            {manyModels && <span className="atom-label-detail"> model {atom.model}</span>}
           </div>
           <div>
             <span className="atom-label-detail">B-factor</span> {atom.bFactor.toFixed(2)}

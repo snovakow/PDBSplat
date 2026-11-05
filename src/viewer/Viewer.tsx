@@ -5,6 +5,7 @@ import { useBounds } from './bounds.ts'
 import { Clip } from './Clip.tsx'
 import { Effects } from './Effects.tsx'
 import { Framing } from './Framing.tsx'
+import { ModelPlayer } from './ModelPlayer.tsx'
 import { Picking } from './Picking.tsx'
 import { ProteinSplats } from './ProteinSplats.tsx'
 import { ProteinSurface } from './ProteinSurface.tsx'
@@ -17,6 +18,7 @@ export function Viewer() {
   const style = useStore((s) => styleOf(s.options.style))
   // The pipeline renders the scene only while bloom has something to add
   const effects = useStore((s) => s.options.bloom > 0)
+  const playing = useStore((s) => s.options.models === 'play')
   return (
     <>
       <OrbitControls ref={controlsRef} makeDefault />
@@ -31,6 +33,7 @@ export function Viewer() {
         <ProteinSurface bounds={bounds} />
       )}
       {effects && <Effects />}
+      {playing && <ModelPlayer />}
     </>
   )
 }

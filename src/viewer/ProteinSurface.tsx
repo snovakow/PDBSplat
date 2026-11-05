@@ -4,7 +4,7 @@ import { BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight }
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
-import { isShown, useStore, type ColorBy, type PickTest } from '../store.ts'
+import { isShown, shownModel, useStore, type ColorBy, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
@@ -37,6 +37,8 @@ export function ProteinSurface({ bounds }: Props) {
   const opacity = useStore((s) => s.options.opacity)
   const hydrogens = useStore((s) => s.options.hydrogens)
   const waters = useStore((s) => s.options.waters)
+  const conformations = useStore((s) => s.options.conformations)
+  const model = useStore(shownModel)
   const resolution = useStore((s) => s.options.resolution)
   const material = useRef<MeshStandardNodeMaterial | null>(null)
   const depthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
@@ -71,7 +73,7 @@ export function ProteinSurface({ bounds }: Props) {
       discard(scene, surface.current)
       surface.current = null
     }
-    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters }))
+    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
     if (shown.length === 0) {
       if (surface.current) discard(scene, surface.current)
       surface.current = null
@@ -87,8 +89,8 @@ export function ProteinSurface({ bounds }: Props) {
       radii[i] = vdwRadius(atom.element) * scale
     })
 
-    // A cancelled request can still arrive, during a drag, and shows until the latest does, unless its entry has gone.
-    // Results arrive in the order they were asked for, so one never replaces a newer surface
+    // A cancelled request can still arrive, during a drag or while models play, and shows until the latest does, unless
+    // its entry has gone. Results arrive in the order they were asked for, so one never replaces a newer surface
     const request = requestSurface({ centers, radii, spacing: 1 / resolution })
     request.result.then(
       ({ mesh: built, milliseconds }) => {
@@ -134,8 +136,13 @@ export function ProteinSurface({ bounds }: Props) {
       },
       (error: unknown) => console.warn(`PDBSplat: the surface couldn't be meshed: ${String(error)}`),
     )
-    return () => request.cancel()
-  }, [get, atoms, bounds, scale, hydrogens, waters, resolution])
+    // While models play, a step leaves the mesh under way to finish and show while the latest model waits. Cut off at
+    // every step, each mesh would start in a fresh worker, and one slower than its grace would never arrive, leaving
+    // the surface on an old model, or showing none
+    return () => {
+      if (useStore.getState().options.models !== 'play') request.cancel()
+    }
+  }, [get, atoms, bounds, scale, hydrogens, waters, conformations, model, resolution])
 
   // A new colouring or Burial repaints the vertices from their atoms, without meshing again
   useEffect(() => {

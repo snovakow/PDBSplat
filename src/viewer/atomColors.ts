@@ -1,7 +1,7 @@
 import { Color, SRGBColorSpace } from 'three'
 import { burial } from '../pdb/burial.ts'
 import { elementColor } from '../pdb/elements.ts'
-import { residueKey, type Atom } from '../pdb/mmcif.ts'
+import { defaultAtoms, residueKey, type Atom, type SecondaryStructure } from '../pdb/mmcif.ts'
 import { percentile } from '../pdb/percentile.ts'
 import type { ColorBy } from '../store.ts'
 
@@ -17,9 +17,22 @@ const rainbowEnd = 0
 const lowPercentile = 0.05
 const highPercentile = 0.95
 
-// Each atom's colour, by element, chain, B-factor or place along its chain, as r, g, b per atom in three's working
-// colour space, darkened by Burial's share of how buried the atom is. The entry's atoms set the B-factor spread, the
-// rainbow's ends and the burial, so that hiding atoms recolours none
+// The secondary-structure colouring's colours, Jmol's: a polymer residue takes its range's, or outside any range,
+// DNA's or RNA's, or white for anything else
+const structureColors: Record<Exclude<SecondaryStructure, 'none'>, Color> = {
+  helix: new Color(0xff0080),
+  strand: new Color(0xffc800),
+  turn: new Color(0x6080ff),
+}
+const dnaColor = new Color(0xae00fe)
+const rnaColor = new Color(0xfd0162)
+const otherColor = new Color(0xffffff)
+const dnaResidues = new Set(['DA', 'DC', 'DG', 'DT', 'DU'])
+const rnaResidues = new Set(['A', 'C', 'G', 'U'])
+
+// Each atom's colour, by element, chain, B-factor, place along its chain or secondary structure, as r, g, b per atom in
+// three's working colour space, darkened by Burial's share of how buried the atom is. The entry's atoms set the
+// B-factor spread, the rainbow's ends and the burial, so that hiding atoms recolours none
 export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: readonly Atom[], burialStrength: number) {
   const colors = new Float32Array(atoms.length * 3)
   const chainColors = new Map<string, Color>()
@@ -30,6 +43,8 @@ export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: read
   atoms.forEach((atom, i) => {
     if (colorBy === 'chain') color.copy(chainColor(chainColors, atom.chain))
     else if (spread) bFactorColor(color, spread, atom.bFactor)
+    // The structure colouring, like the rainbow, leaves atoms outside polymer chains in their elements' colours
+    else if (colorBy === 'structure' && atom.polymer) color.copy(structureColor(atom))
     else {
       // The rainbow leaves ligands, sugars and waters, which are in no polymer chain, in their elements' colours
       const position = positions && atom.polymer ? positions.get(residueKey(atom)) : undefined
@@ -42,6 +57,14 @@ export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: read
     colors[i * 3 + 2] = color.b
   })
   return colors
+}
+
+// A modified residue inside a range takes its colour, and a nucleotide outside any range is coloured as DNA or RNA
+function structureColor(atom: Atom) {
+  if (atom.structure !== 'none') return structureColors[atom.structure]
+  if (dnaResidues.has(atom.residueName)) return dnaColor
+  if (rnaResidues.has(atom.residueName)) return rnaColor
+  return otherColor
 }
 
 // Chains take hues a golden angle apart, in the order they first appear, so neighbours differ
@@ -62,11 +85,15 @@ interface Spread {
 // Each entry's spread, kept beside its atoms, which are never changed
 const spreads = new WeakMap<readonly Atom[], Spread>()
 
-// The low and high percentiles of the B-factors of the entry's atoms other than waters, whose B-factors run high
+// The low and high percentiles of the B-factors of the entry's atoms other than waters, whose B-factors run high.
+// They're taken from the atoms shown at the defaults, so that showing more models or conformations recolours none
 export function bFactorSpread(entry: readonly Atom[]): Spread {
   let spread = spreads.get(entry)
   if (!spread) {
-    const values = Float64Array.from(entry.filter((atom) => !atom.water), (atom) => atom.bFactor).sort()
+    const values = Float64Array.from(
+      defaultAtoms(entry).filter((atom) => !atom.water),
+      (atom) => atom.bFactor,
+    ).sort()
     spread = { low: percentile(values, lowPercentile), high: percentile(values, highPercentile) }
     spreads.set(entry, spread)
   }
@@ -85,13 +112,14 @@ function bFactorColor(color: Color, { low, high }: Spread, bFactor: number) {
 // Each entry's polymer residues, by residue key, at their place along their chain from 0 at its first to 1 at its last
 const rainbows = new WeakMap<readonly Atom[], Map<string, number>>()
 
-// A chain's polymer residues, modified ones such as selenomethionine included, in the file's order
+// A chain's polymer residues, modified ones such as selenomethionine included, in the file's order. They're those shown
+// at the defaults, and the keys name no model, so a residue takes the same place in every model and conformation
 export function rainbowPositions(entry: readonly Atom[]) {
   let positions = rainbows.get(entry)
   if (!positions) {
     const chains = new Map<string, string[]>()
     const seen = new Set<string>()
-    for (const atom of entry) {
+    for (const atom of defaultAtoms(entry)) {
       if (!atom.polymer) continue
       const key = residueKey(atom)
       if (seen.has(key)) continue

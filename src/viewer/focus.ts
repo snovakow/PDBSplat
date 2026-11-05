@@ -19,7 +19,7 @@ const nucleotideAtom = "C1'"
 
 // The key a picked focus compares atoms by: the picked atom's residue for the picked residue, or its chain for the
 // picked chain. It's null for the other choices and without a pick, so that a pick changes the splats only when a
-// picked focus shows it
+// picked focus shows it. It names no model, so the picked residue or chain stays in focus in every model shown
 export function pickedKey(focus: Focus, picked: Atom | null): string | null {
   if (!picked) return null
   if (focus === 'residue') return residueKey(picked)
@@ -27,8 +27,8 @@ export function pickedKey(focus: Focus, picked: Atom | null): string | null {
   return null
 }
 
-// A test for whether an atom of the entry is in focus, or null when every atom is. A picked focus takes its key from
-// pickedKey, and without one keeps every atom
+// A test for whether an atom of the entry is in focus, or null when every atom is. The backbone and the ligands are
+// found within each atom's own model. A picked focus takes its key from pickedKey, and without one keeps every atom
 export function focusTest(
   entry: readonly Atom[],
   focus: Focus,
@@ -39,11 +39,18 @@ export function focusTest(
     return (atom) =>
       atom.polymer &&
       (proteinBackbone.has(atom.atomName) ||
-        (nucleicBackbone.has(atom.atomName) && nucleotides.has(residueKey(atom))))
+        (nucleicBackbone.has(atom.atomName) && (nucleotides.get(atom.model)?.has(residueKey(atom)) ?? false)))
   }
   if (focus === 'ligands') {
+    // A model without ligands keeps all its atoms in focus, as an entry without any does
     const site = bindingSite(entry)
-    return site && ((atom) => site.has(residueKey(atom)))
+    return (
+      site &&
+      ((atom) => {
+        const residues = site.get(atom.model)
+        return !residues || residues.has(residueKey(atom))
+      })
+    )
   }
   if (picked === null) return null
   if (focus === 'residue') return (atom) => residueKey(atom) === picked
@@ -51,40 +58,59 @@ export function focusTest(
   return null
 }
 
-// Each entry's nucleotides, kept beside its atoms, which are never changed
-const nucleotideSets = new WeakMap<readonly Atom[], Set<string>>()
-
-// The residue keys of the entry's polymer residues that have the sugar atom a base joins, so that a phosphorylated
-// amino acid's side-chain phosphorus isn't taken for a nucleic acid's backbone
-function nucleotideResidues(entry: readonly Atom[]) {
-  let residues = nucleotideSets.get(entry)
-  if (!residues) {
-    residues = new Set()
-    for (const atom of entry) if (atom.polymer && atom.atomName === nucleotideAtom) residues.add(residueKey(atom))
-    nucleotideSets.set(entry, residues)
+// Each model's atoms in their first conformations, which a residue's alternates share its focus with
+function firstConformations(entry: readonly Atom[]) {
+  const models = new Map<number, Atom[]>()
+  for (const atom of entry) {
+    if (!atom.firstConformation) continue
+    const model = models.get(atom.model)
+    if (model) model.push(atom)
+    else models.set(atom.model, [atom])
   }
-  return residues
+  return models
 }
 
-// Each entry's binding site, kept beside its atoms, which are never changed
-const bindingSites = new WeakMap<readonly Atom[], Set<string> | null>()
+// Each entry's nucleotides, kept beside its atoms, which are never changed
+const nucleotideSets = new WeakMap<readonly Atom[], Map<number, Set<string>>>()
 
-// The residue keys of the entry's ligands, its residues outside polymer chains other than waters, and of every residue
-// with an atom within the binding distance of one of theirs, or null for an entry without ligands
+// For each model, the residue keys of its polymer residues that have the sugar atom a base joins, so that a
+// phosphorylated amino acid's side-chain phosphorus isn't taken for a nucleic acid's backbone
+function nucleotideResidues(entry: readonly Atom[]) {
+  let models = nucleotideSets.get(entry)
+  if (!models) {
+    models = new Map()
+    for (const [model, atoms] of firstConformations(entry)) {
+      const residues = new Set<string>()
+      for (const atom of atoms) if (atom.polymer && atom.atomName === nucleotideAtom) residues.add(residueKey(atom))
+      models.set(model, residues)
+    }
+    nucleotideSets.set(entry, models)
+  }
+  return models
+}
+
+// Each entry's binding sites, kept beside its atoms, which are never changed
+const bindingSites = new WeakMap<readonly Atom[], Map<number, Set<string>> | null>()
+
+// For each model with ligands, the residue keys of its ligands, its residues outside polymer chains other than waters,
+// and of every residue with an atom within the binding distance of one of theirs, all in their first conformations;
+// or null for an entry without ligands
 export function bindingSite(entry: readonly Atom[]) {
   let site = bindingSites.get(entry)
   if (site === undefined) {
-    const ligands = entry.filter((atom) => !atom.polymer && !atom.water)
-    if (ligands.length === 0) site = null
-    else {
-      const residues = entry.map(residueKey)
+    const models = new Map<number, Set<string>>()
+    for (const [model, atoms] of firstConformations(entry)) {
+      const ligands = atoms.filter((atom) => !atom.polymer && !atom.water)
+      if (ligands.length === 0) continue
+      const residues = atoms.map(residueKey)
       const keys = new Set<string>()
-      const grid = neighbourGrid(entry, bindingDistance)
+      const grid = neighbourGrid(atoms, bindingDistance)
       for (const ligand of ligands) {
         grid.forEachWithin(ligand.x, ligand.y, ligand.z, (index) => keys.add(residues[index]))
       }
-      site = keys
+      models.set(model, keys)
     }
+    site = models.size > 0 ? models : null
     bindingSites.set(entry, site)
   }
   return site

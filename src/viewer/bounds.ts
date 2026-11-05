@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Vector3 } from 'three'
 import { vdwRadius } from '../pdb/elements.ts'
-import type { Atom } from '../pdb/mmcif.ts'
+import { defaultAtoms, type Atom } from '../pdb/mmcif.ts'
 import { useStore } from '../store.ts'
 
 export interface Bounds {
@@ -9,14 +9,16 @@ export interface Bounds {
   radius: number
 }
 
-// The loaded entry's bounds, which every style centres the atoms on and the camera frames
+// The loaded entry's bounds, which every style centres the atoms on and the camera frames. They're those of the atoms
+// Models and Alternates show at their defaults, waters included, so that showing more models or conformations doesn't
+// move the structure or the camera
 export function useBounds() {
   const atoms = useStore((s) => s.atoms)
-  return useMemo(() => measure(atoms), [atoms])
+  return useMemo(() => measure(defaultAtoms(atoms)), [atoms])
 }
 
 // The centroid, and the radius around it that holds every atom's van der Waals sphere
-function measure(atoms: Atom[]): Bounds {
+function measure(atoms: readonly Atom[]): Bounds {
   const center = new Vector3()
   for (const atom of atoms) {
     center.x += atom.x

@@ -9,10 +9,13 @@ import {
   examples,
   firstEntry,
   isShown,
+  shownModel,
   useStore,
   type Blend,
   type ColorBy,
+  type Conformations,
   type Focus,
+  type Models,
   type Status,
 } from './store.ts'
 import { styles, type Style } from './viewer/styles.ts'
@@ -143,13 +146,16 @@ const stylePath = 'Look.style'
 const focusPath = 'Atoms.focus'
 const bloomPath = 'Scene.bloom'
 
-// The Colour by, Focus and Blend choices, each by its label in the panel
+// The Colour by, Models, Alternates, Focus and Blend choices, each by its label in the panel
 const colorByOptions = {
   element: 'element',
   chain: 'chain',
   'B-factor': 'bfactor',
   rainbow: 'rainbow',
+  structure: 'structure',
 } satisfies Record<string, ColorBy>
+const modelsOptions = { first: 'first', all: 'all', play: 'play' } satisfies Record<string, Models>
+const conformationsOptions = { first: 'first', all: 'all' } satisfies Record<string, Conformations>
 const focusOptions = {
   all: 'all',
   ligands: 'ligands',
@@ -173,8 +179,12 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   const title = useStore((s) => s.title)
   const status = useStore((s) => s.status)
   const error = useStore((s) => s.error)
-  const shown = useStore((s) => s.atoms.filter((atom) => isShown(atom, s.options)).length)
+  const shown = useStore((s) => {
+    const model = shownModel(s)
+    return s.atoms.filter((atom) => isShown(atom, s.options, model)).length
+  })
   const picked = useStore((s) => s.picked)
+  const manyModels = useStore((s) => s.models.length > 1)
 
   const [, set] = useControls(() => {
     const { load, setOptions } = useStore.getState()
@@ -305,6 +315,20 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           value: defaultOptions.waters,
           onChange: (waters: boolean) => setOptions({ waters }),
         },
+        // An NMR entry's models, and the alternate conformations some residues have, in every style. An entry with one
+        // model, or no alternates, shows the same atoms for each choice
+        models: {
+          label: 'Models',
+          options: modelsOptions,
+          value: defaultOptions.models,
+          onChange: (models: Models) => setOptions({ models }),
+        },
+        conformations: {
+          label: 'Alternates',
+          options: conformationsOptions,
+          value: defaultOptions.conformations,
+          onChange: (conformations: Conformations) => setOptions({ conformations }),
+        },
         // Thermal, Focus and Fade act on splats, so the surface leaves them out
         thermal: {
           label: 'Thermal',
@@ -417,8 +441,8 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   }, [set, id, title, shown, status, error])
 
   useEffect(() => {
-    set({ picked: picked ? atomText(picked) : '' })
-  }, [set, picked])
+    set({ picked: picked ? atomText(picked, manyModels) : '' })
+  }, [set, picked, manyModels])
 
   return null
 }

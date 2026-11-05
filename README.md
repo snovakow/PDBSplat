@@ -8,14 +8,14 @@ PDBSplat renders proteins from the [Protein Data Bank](https://www.rcsb.org) as 
 
 ## What it shows
 
-The page opens on 1CRN, crambin, a small plant protein of 327 atoms. The panel lists five more examples, from small to large: 1BNA, a short stretch of DNA; 1EJG, crambin again with its hydrogens; 1D3Z, ubiquitin as solved by NMR; 4HHB, human haemoglobin; and 1IGT, an intact mouse antibody of almost 13,000 atoms, four protein chains in a Y. Any other entry loads by its four-character PDB ID. You can find more by searching [rcsb.org](https://www.rcsb.org).
+The page opens on 1CRN, crambin, a small plant protein of 327 atoms. The panel lists five more examples, from small to large: 1BNA, a short stretch of DNA; 1EJG, crambin again with its hydrogens and alternate conformations; 1D3Z, ubiquitin as solved by NMR, in several models; 4HHB, human haemoglobin; and 1IGT, an intact mouse antibody of almost 13,000 atoms, four protein chains in a Y. Any other entry loads by its four-character PDB ID. You can find more by searching [rcsb.org](https://www.rcsb.org).
 
-Each atom is one round splat, sized by its element's van der Waals radius and coloured in its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, phosphorus and iron orange. Where an entry holds several models, as NMR structures do, PDBSplat shows the first, and where an atom has alternate positions, it shows the first of them. Each entry is centred and framed to fit the window as it loads.
+Each atom is one round splat, sized by its element's van der Waals radius and coloured in its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, phosphorus and iron orange. Where an entry holds several models, as NMR structures do, PDBSplat starts on the first, and where residues have alternate conformations, on the first of each; **Models** and **Alternates** in the panel show the rest. Each entry is centred and framed to fit the window as it loads, on the atoms it starts with, so showing more of them never moves it.
 
 ## Controls
 
 - **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
-- **Point** at an atom, in any style, and a label beside the pointer names it: its atom name and element, its residue and chain, its B-factor, and its occupancy when the atom is only partly there. The label hides while you drag.
+- **Point** at an atom, in any style, and a label beside the pointer names it: its atom name and element, and its alternate conformation if it has one; its residue, with any insertion code, its chain, and its model in an entry with several; its B-factor, and its occupancy when the atom is only partly there. The label hides while you drag.
 - **Click** or tap an atom to pick it, and click empty space to let it go. Even a faint atom can be picked, but not one that Focus has faded far out.
 - The **panel** at the top right. Its folders hide the controls the chosen style doesn't use:
   - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
@@ -27,14 +27,17 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
     - **Shading**, **Highlight**, **Shininess** and **Outline**, for the spheres, set how far each darkens towards its rim, how bright and how tight its highlight is, and the width of an inked rim that outlines it.
     - **Blend**, for the soft splats and the spheres, lays each splat over what's behind it, or, in glow, adds its light to it, so dense parts glow like an X-ray, with **Opacity** setting how brightly.
   - **Colour:**
-    - **Colour by** colours each atom by one of four things, in every style:
+    - **Colour by** colours each atom by one of five things, in every style:
       - its **element**, as described above
       - its **chain**, which gives every chain its own hue
       - its **B-factor**, which says how far the atom moves about its place: blue for the entry's stillest atoms, through white, to red for its most mobile, so a protein's ordered core reads blue and its loose loops red
       - a **rainbow** along each chain, from blue at its start to red at its end, while ligands and waters keep their element colours
+      - its secondary **structure**, in Jmol's colours: helices pink, strands yellow and turns blue, DNA purple and RNA red outside those, and the rest of a chain white, while ligands and waters keep their element colours
     - **Burial** darkens each atom by how deeply the atoms around it bury it, in every style, so a protein's core falls into shadow while its surface stays bright.
   - **Atoms:**
     - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
+    - **Models**, in every style, shows an entry's first model, or all its models at once, or plays them in turn as an animation. An NMR entry has several, and most other entries one. With all of them shown, the soft splats and the spheres draw each model fainter, so that where the models disagree reads as a cloud, while the surface meshes them together into one.
+    - **Alternates**, in every style, shows only the first conformation of each residue the structure records in more than one position, or every one of them. The soft splats and the spheres draw each alternate atom as faint as its occupancy, the share of the time it spends there, while the surface meshes them all together.
     - **Thermal**, for the soft splats and the spheres, blurs or swells each atom by how far its B-factor says it moves, so mobile loops spread out while the core stays crisp.
     - **Focus**, for the soft splats and the spheres, keeps every atom in focus, or only the ligands and the residues that hold them, or only the backbone: a protein's main chain, or a nucleic acid's sugars and phosphates, or only the picked atom's residue or its whole chain. **Fade** sets how faintly the atoms out of focus are drawn.
   - **Scene:**
@@ -62,7 +65,7 @@ To build it, run `npm run build`. It makes a static site in `dist/` that works f
 
 ## Status
 
-PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above. The ideas below are where it may go next, along with more colourings and playing an NMR entry's models as an animation.
+PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above, which colour it by B-factor, along each chain and by secondary structure, and play an NMR entry's models as an animation. The ideas below are where it may go next.
 
 ## Stack
 

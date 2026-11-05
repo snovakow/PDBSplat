@@ -9,7 +9,7 @@ import {
 } from 'three/addons/utils/GaussianSplatUtils.js'
 import type { NodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
-import { isShown, useStore, type PickTest } from '../store.ts'
+import { isShown, shownModel, useStore, type PickTest } from '../store.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { focusTest, pickedKey } from './focus.ts'
@@ -20,7 +20,9 @@ import { asWebGPU } from './renderer.ts'
 const kernelCutoff = 2
 
 // An atom in focus has a full alpha byte, as Opacity acts through the shading's uniform and so never rebuilds the
-// splats; one out of focus has Fade's share of it
+// splats; one out of focus has Fade's share of it. Every model drawn at once overlaps the others, so each atom then
+// keeps one over the square root of the number of models, and an atom in one of several conformations keeps its
+// occupancy's share while they're all drawn
 const fullAlpha = 255
 
 // A B-factor is 8π² times its atom's mean square displacement along any one axis, in square ångströms
@@ -40,6 +42,9 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const scale = useStore((s) => s.options.scale)
   const hydrogens = useStore((s) => s.options.hydrogens)
   const waters = useStore((s) => s.options.waters)
+  const conformations = useStore((s) => s.options.conformations)
+  const model = useStore(shownModel)
+  const modelCount = useStore((s) => s.models.length)
   const thermal = useStore((s) => s.options.thermal)
   const focus = useStore((s) => s.options.focus)
   const fade = useStore((s) => s.options.fade)
@@ -48,7 +53,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const blend = useStore((s) => s.options.blend)
 
   useEffect(() => {
-    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters }))
+    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
     if (shown.length === 0) return undefined
 
     const centers = new Float32Array(shown.length * 3)
@@ -56,6 +61,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     const colors = new Uint8ClampedArray(shown.length * 4)
     const rgb = atomColors(shown, colorBy, atoms, burial)
     const inFocus = focusTest(atoms, focus, picked)
+    const modelShare = model === null ? 1 / Math.sqrt(modelCount) : 1
 
     shown.forEach((atom, i) => {
       centers[i * 3] = atom.x - bounds.center.x
@@ -67,7 +73,10 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       const sigma = Math.sqrt(size * size + (thermal * Math.max(atom.bFactor, 0)) / bFactorPerVariance)
       writeCovariance(covariances, i * 6, sigma, sigma, sigma, 0, 0, 0, 1)
 
-      const alpha = !inFocus || inFocus(atom) ? fullAlpha : fullAlpha * fade
+      // Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn whole
+      const focusShare = !inFocus || inFocus(atom) ? 1 : fade
+      const occupancyShare = conformations === 'all' && atom.altLoc !== '' ? atom.occupancy : 1
+      const alpha = fullAlpha * focusShare * modelShare * occupancyShare
       writeColorBytes(colors, i * 4, rgb[i * 3] * 255, rgb[i * 3 + 1] * 255, rgb[i * 3 + 2] * 255, alpha)
     })
 
@@ -121,6 +130,9 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     scale,
     hydrogens,
     waters,
+    conformations,
+    model,
+    modelCount,
     thermal,
     focus,
     fade,

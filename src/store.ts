@@ -2,7 +2,7 @@ import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
-import type { Atom } from './pdb/mmcif.ts'
+import { defaultAtoms, type Atom } from './pdb/mmcif.ts'
 import type { Style } from './viewer/styles.ts'
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
@@ -11,9 +11,9 @@ export const examples = [
   { id: '1CRN', name: 'crambin' },
   // 566 atoms: two DNA strands, with phosphorus and 80 waters
   { id: '1BNA', name: 'B-DNA' },
-  // 637 atoms: crambin again, with its hydrogens and alternate locations
+  // 637 atoms: crambin again, with its hydrogens, and 843 with every alternate conformation of its 17 residues that have them
   { id: '1EJG', name: 'crambin + H' },
-  // 1,231 atoms: the first of an NMR entry's models
+  // 1,231 atoms in each of an NMR entry's ten models
   { id: '1D3Z', name: 'ubiquitin NMR' },
   // 4,779 atoms: four chains, four hemes with their iron, and 221 waters
   { id: '4HHB', name: 'haemoglobin' },
@@ -26,13 +26,19 @@ export const firstEntry: string = examples[0].id
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
-export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow'
+export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow' | 'structure'
 
 // Which atoms the splat styles keep in focus, fading the rest: residue and chain keep the picked atom's
 export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
 
 // How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow
 export type Blend = 'normal' | 'glow'
+
+// Which of an entry's models are shown: the first, every one at once, or each in turn
+export type Models = 'first' | 'all' | 'play'
+
+// Which conformations are shown of the residues that have alternate locations: the first each lists, or every one
+export type Conformations = 'first' | 'all'
 
 // What the panel sets and the scene draws
 export interface ViewOptions {
@@ -43,6 +49,8 @@ export interface ViewOptions {
   opacity: number
   hydrogens: boolean
   waters: boolean
+  models: Models
+  conformations: Conformations
   // The surface style's grid points per ångström: higher meshes it more finely, and more slowly
   resolution: number
   // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1
@@ -84,6 +92,8 @@ export const defaultOptions: ViewOptions = {
   opacity: 0.9,
   hydrogens: true,
   waters: false,
+  models: 'first',
+  conformations: 'first',
   resolution: 2,
   hardness: 0,
   shading: 0.75,
@@ -102,8 +112,24 @@ export const defaultOptions: ViewOptions = {
   clip: 0,
 }
 
-export function isShown(atom: Atom, options: Pick<ViewOptions, 'hydrogens' | 'waters'>) {
-  return (options.hydrogens || !atom.hydrogen) && (options.waters || !atom.water)
+// Whether an atom is drawn, by Hydrogens, Waters and Conformations, and by the model shown, or every model for null
+export function isShown(
+  atom: Atom,
+  options: Pick<ViewOptions, 'hydrogens' | 'waters' | 'conformations'>,
+  model: number | null,
+) {
+  return (
+    (options.hydrogens || !atom.hydrogen) &&
+    (options.waters || !atom.water) &&
+    (options.conformations === 'all' || atom.firstConformation) &&
+    (model === null || atom.model === model)
+  )
+}
+
+// The model Models shows: the first, or the one playing, or null for every model at once
+export function shownModel(state: { options: ViewOptions; models: readonly number[]; model: number }): number | null {
+  if (state.options.models === 'all') return null
+  return state.options.models === 'play' ? state.model : (state.models[0] ?? state.model)
 }
 
 // The nearest atom a ray has met so far, and how far along the ray, or null and Infinity before any
@@ -120,7 +146,13 @@ interface State {
   // The entry shown, which stays until the next one is ready
   id: string
   title: string
+  // Every model's atoms in every conformation
   atoms: Atom[]
+  // The entry's models, in the file's order, and the one shown while Models plays them
+  models: readonly number[]
+  model: number
+  // Moves playback on to the next model, and from the last back to the first
+  nextModel: () => void
   // The latest load, and its message if it failed
   status: Status
   error: string | null
@@ -142,6 +174,8 @@ export const useStore = create<State>()((set) => ({
   id: '',
   title: '',
   atoms: [],
+  models: [],
+  model: 0,
   status: 'idle',
   error: null,
   options: defaultOptions,
@@ -154,6 +188,12 @@ export const useStore = create<State>()((set) => ({
       const options = { ...state.options, ...changes }
       return shallow(options, state.options) ? state : { options }
     }),
+  nextModel: () =>
+    set((state) => {
+      const { models, model } = state
+      const next = models[(models.indexOf(model) + 1) % models.length]
+      return next === undefined || next === model ? state : { model: next }
+    }),
   hover: (hovered) => set((state) => (state.hovered === hovered ? state : { hovered })),
   pick: (picked) => set((state) => (state.picked === picked ? state : { picked })),
   registerPick: (pick) => {
@@ -164,12 +204,27 @@ export const useStore = create<State>()((set) => ({
     set({ status: 'loading', error: null })
     try {
       const entry = await fetchEntry(id)
-      set({ id: entry.id, title: entry.title, atoms: entry.atoms, status: 'ready', hovered: null, picked: null })
-      const count = (test: (atom: Atom) => boolean) => entry.atoms.filter(test).length
+      const { atoms, models } = entry
+      set({
+        id: entry.id,
+        title: entry.title,
+        atoms,
+        models,
+        model: models[0] ?? 0,
+        status: 'ready',
+        hovered: null,
+        picked: null,
+      })
+      // The counts are of the atoms shown at the defaults, then of the models and conformations beyond them
+      const first = defaultAtoms(atoms)
+      const count = (test: (atom: Atom) => boolean) => first.filter(test).length
+      const later = atoms.filter((atom) => !atom.firstConformation).length
       console.info(
-        `PDBSplat: ${entry.id}, "${entry.title}": ${entry.atoms.length} atoms, ` +
+        `PDBSplat: ${entry.id}, "${entry.title}": ${first.length} atoms, ` +
           `${count((atom) => atom.water)} of them waters, ${count((atom) => atom.hydrogen)} hydrogens, ` +
-          `${count((atom) => atom.altLoc !== '')} with alternate locations`,
+          `${count((atom) => atom.altLoc !== '')} with alternate locations; ` +
+          `${atoms.length} atoms across ${models.length} ${models.length === 1 ? 'model' : 'models'}, ` +
+          `${later} of them in later conformations`,
       )
     } catch (error) {
       // A newer load aborted this one, and owns the status now
