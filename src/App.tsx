@@ -144,6 +144,7 @@ const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.
 // inside a folder
 const stylePath = 'Look.style'
 const focusPath = 'Atoms.focus'
+const ellipsoidsPath = 'Atoms.ellipsoids'
 const bloomPath = 'Scene.bloom'
 
 // The Colour by, Models, Alternates, Focus and Blend choices, each by its label in the panel
@@ -329,15 +330,22 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           value: defaultOptions.conformations,
           onChange: (conformations: Conformations) => setOptions({ conformations }),
         },
-        // Thermal, Focus and Fade act on splats, so the surface leaves them out
+        // Thermal, Ellipsoids, Focus and Fade act on splats, so the surface leaves them out. An ellipsoid is drawn from
+        // the atom's motion alone, so Thermal steps aside while Ellipsoids is on
         thermal: {
           label: 'Thermal',
           value: defaultOptions.thermal,
           min: 0,
           max: 3,
           step: 0.05,
-          render: (get) => get(stylePath) !== 'surface',
+          render: (get) => get(stylePath) !== 'surface' && !get(ellipsoidsPath),
           onChange: (thermal: number) => setOptions({ thermal }),
+        },
+        ellipsoids: {
+          label: 'Ellipsoids',
+          value: defaultOptions.ellipsoids,
+          render: (get) => get(stylePath) !== 'surface',
+          onChange: (ellipsoids: boolean) => setOptions({ ellipsoids }),
         },
         focus: {
           label: 'Focus',

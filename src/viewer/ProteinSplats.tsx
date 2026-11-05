@@ -14,6 +14,7 @@ import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { focusTest, pickedKey } from './focus.ts'
 import { beyondNear } from './nearPlane.ts'
+import { writeEllipsoid } from './ellipsoids.ts'
 import { asWebGPU } from './renderer.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
@@ -34,7 +35,7 @@ interface Props {
   colorNode: NonNullable<NodeMaterial['colorNode']>
 }
 
-// One round splat per shown atom, centred on the structure's centroid
+// One splat per shown atom, round or its thermal ellipsoid, centred on the structure's centroid
 export function ProteinSplats({ bounds, colorNode }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
@@ -46,6 +47,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const model = useStore(shownModel)
   const modelCount = useStore((s) => s.models.length)
   const thermal = useStore((s) => s.options.thermal)
+  const ellipsoids = useStore((s) => s.options.ellipsoids)
   const focus = useStore((s) => s.options.focus)
   const fade = useStore((s) => s.options.fade)
   const picked = useStore((s) => pickedKey(s.options.focus, s.picked))
@@ -68,10 +70,14 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       centers[i * 3 + 1] = atom.y - bounds.center.y
       centers[i * 3 + 2] = atom.z - bounds.center.z
 
-      // Thermal motion spreads the atom by its displacement, whose variance adds to the splat's own
-      const size = (vdwRadius(atom.element) * scale) / kernelCutoff
-      const sigma = Math.sqrt(size * size + (thermal * Math.max(atom.bFactor, 0)) / bFactorPerVariance)
-      writeCovariance(covariances, i * 6, sigma, sigma, sigma, 0, 0, 0, 1)
+      if (ellipsoids) {
+        writeEllipsoid(covariances, i * 6, atom, scale)
+      } else {
+        // Thermal motion spreads the atom by its displacement, whose variance adds to the splat's own
+        const size = (vdwRadius(atom.element) * scale) / kernelCutoff
+        const sigma = Math.sqrt(size * size + (thermal * Math.max(atom.bFactor, 0)) / bFactorPerVariance)
+        writeCovariance(covariances, i * 6, sigma, sigma, sigma, 0, 0, 0, 1)
+      }
 
       // Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn whole
       const focusShare = !inFocus || inFocus(atom) ? 1 : fade
@@ -134,6 +140,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     model,
     modelCount,
     thermal,
+    ellipsoids,
     focus,
     fade,
     picked,

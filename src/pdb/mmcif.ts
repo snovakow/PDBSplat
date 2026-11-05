@@ -1,4 +1,5 @@
-// A small mmCIF reader for what the app needs: the _atom_site table, the secondary structure's ranges and _struct.title
+// A small mmCIF reader for what the app needs: the _atom_site table, its anisotropic displacements, the secondary
+// structure's ranges and _struct.title
 
 // The secondary structure a polymer residue lies in, or none for one in no range and every atom outside a polymer
 export type SecondaryStructure = 'helix' | 'strand' | 'turn' | 'none'
@@ -28,6 +29,11 @@ export interface Atom {
   hydrogen: boolean
   water: boolean
   structure: SecondaryStructure
+  // The atom's anisotropic mean square displacement U, in square ångströms, as the six values of its symmetric tensor
+  // in the order three's splat covariances take: U11, U12, U13, U22, U23 and U33. It's in the same Cartesian frame as
+  // the coordinates, as the PDB's format guide says of the ANISOU records the table carries. Null where the entry
+  // gives the atom none
+  u: Float32Array | null
 }
 
 export interface Structure {
@@ -130,6 +136,9 @@ const atomCategory = '_atom_site.'
 const helixCategory = '_struct_conf.'
 const strandCategory = '_struct_sheet_range.'
 const rangeCategories = [helixCategory, strandCategory]
+const anisotropCategory = '_atom_site_anisotrop.'
+// The tables that may be written as a tag and value per column when they have one row
+const singleCategories = [...rangeCategories, anisotropCategory]
 
 // A secondary structure's run of residues in one chain, by the chain's label and the residues' places in its sequence
 interface Range {
@@ -144,10 +153,13 @@ export function parseMmcif(text: string): Structure {
   let title = ''
   let table: AtomTable | null = null
   const ranges: Range[] = []
-  // A table of one row may be written as a tag and value per column instead of a loop: each range table's tags and
+  // Each anisotropic tensor by its atom's id, which the atoms are joined to once the file is read, so either table may
+  // come first
+  const tensors = new Map<string, Float32Array>()
+  // A table of one row may be written as a tag and value per column instead of a loop: each such table's tags and
   // values, in the file's order
   const single = new Map<string, { columns: string[]; row: string[] }>(
-    rangeCategories.map((category) => [category, { columns: [], row: [] }]),
+    singleCategories.map((category) => [category, { columns: [], row: [] }]),
   )
   let pending = tokens.next()
 
@@ -165,7 +177,10 @@ export function parseMmcif(text: string): Structure {
       // The atom table's test is exact, so that _atom_site_anisotrop's loop doesn't match it
       const atoms = columns[0]?.startsWith(atomCategory) ? atomReader(columns) : null
       const category = rangeCategories.find((prefix) => columns[0]?.startsWith(prefix))
-      const reader = atoms ?? (category ? rangeReader(columns, category, ranges) : null)
+      const reader =
+        atoms ??
+        (category ? rangeReader(columns, category, ranges) : null) ??
+        (columns[0]?.startsWith(anisotropCategory) ? anisotropReader(columns, tensors) : null)
       const row: string[] = []
       while (pending && (tokens.quoted || !(tokens.value.startsWith('_') || isReserved(tokens.value)))) {
         if (reader) {
@@ -184,7 +199,7 @@ export function parseMmcif(text: string): Structure {
       if (pending && (tokens.quoted || !(tokens.value.startsWith('_') || isReserved(tokens.value)))) {
         const value = tokens.quoted ? tokens.value : emptyIfUnknown(tokens.value)
         if (word === '_struct.title') title = value
-        const pairs = single.get(rangeCategories.find((prefix) => word.startsWith(prefix)) ?? '')
+        const pairs = single.get(singleCategories.find((prefix) => word.startsWith(prefix)) ?? '')
         if (pairs) {
           pairs.columns.push(word)
           pairs.row.push(value)
@@ -198,9 +213,12 @@ export function parseMmcif(text: string): Structure {
 
   if (!table) throw new Error('The file has no atom table')
   for (const [category, { columns, row }] of single) {
-    if (columns.length > 0) rangeReader(columns, category, ranges).read(row)
+    if (columns.length === 0) continue
+    if (category === anisotropCategory) anisotropReader(columns, tensors).read(row)
+    else rangeReader(columns, category, ranges).read(row)
   }
   resolveStructures(table, ranges)
+  joinTensors(table, tensors)
   return { title: title.trim().replace(/\s+/g, ' '), atoms: table.atoms, models: table.models }
 }
 
@@ -222,12 +240,13 @@ function columnFinder(columns: string[], category: string) {
 }
 
 // The atoms as read, with what resolving the secondary structure needs of each: its residue's chain label and place in
-// the chain's sequence, NaN outside a polymer
+// the chain's sequence, NaN outside a polymer; and the id the anisotropic tensors name it by
 interface AtomTable {
   atoms: Atom[]
   models: number[]
   labelChains: string[]
   labelPlaces: number[]
+  ids: string[]
 }
 
 // Reads every model's atoms in every conformation, marking each residue's first conformation within its model
@@ -254,13 +273,14 @@ function atomReader(columns: string[]) {
   const occupancy = column('occupancy')
   const bFactor = column('B_iso_or_equiv')
   const model = column('pdbx_PDB_model_num')
+  const id = column('id')
   // A polymer's residues each have a place in its sequence, and ligands, sugars and waters have none.
   // A file without the column falls back on the record type, which takes modified residues for ligands
   const sequenced = columns.includes(`${atomCategory}label_seq_id`)
 
   // Each residue's first alternate ID within each model: its atoms with that ID or none make its first conformation
   const residueAlts = new Map<string, string>()
-  const table: AtomTable = { atoms: [], models: [], labelChains: [], labelPlaces: [] }
+  const table: AtomTable = { atoms: [], models: [], labelChains: [], labelPlaces: [], ids: [] }
   const { atoms, models } = table
 
   const read = (row: string[]) => {
@@ -297,9 +317,11 @@ function atomReader(columns: string[]) {
       hydrogen: symbol === 'H' || symbol === 'D',
       water: waterNames.has(name),
       structure: 'none',
+      u: null,
     })
     table.labelChains.push(labelChain(row))
     table.labelPlaces.push(place === '' ? NaN : Number(place))
+    table.ids.push(id(row))
   }
   return { table, read }
 }
@@ -323,6 +345,42 @@ function rangeReader(columns: string[], category: string, ranges: Range[]) {
     }
   }
   return { read }
+}
+
+// The anisotropic table's columns usually run U11, U22, U33, U12, U13, U23, while three's covariances take U11, U12,
+// U13, U22, U23, U33: each of three's six in turn, by the name of the column it's read from
+const tensorColumns = ['[1][1]', '[1][2]', '[1][3]', '[2][2]', '[2][3]', '[3][3]']
+
+// A B tensor is 8π² times its U, as a B-factor is
+const bPerU = 8 * Math.PI * Math.PI
+
+// Reads _atom_site_anisotrop's tensors by their atoms' ids, as U, or as B, which is converted to U. A row missing any of
+// the six values is left out
+function anisotropReader(columns: string[], tensors: Map<string, Float32Array>) {
+  const column = columnFinder(columns, anisotropCategory)
+  const id = column('id')
+  const fromB = !columns.includes(`${anisotropCategory}U[1][1]`) && columns.includes(`${anisotropCategory}B[1][1]`)
+  const scale = fromB ? 1 / bPerU : 1
+  const values = tensorColumns.map((suffix) => column((fromB ? 'B' : 'U') + suffix))
+  const read = (row: string[]) => {
+    const u = new Float32Array(6)
+    for (let k = 0; k < 6; k++) {
+      const text = values[k](row)
+      const value = text === '' ? NaN : Number(text) * scale
+      if (!Number.isFinite(value)) return
+      u[k] = value
+    }
+    tensors.set(id(row), u)
+  }
+  return { read }
+}
+
+// Gives each atom the tensor whose id is its own
+function joinTensors({ atoms, ids }: AtomTable, tensors: Map<string, Float32Array>) {
+  if (tensors.size === 0) return
+  atoms.forEach((atom, i) => {
+    atom.u = tensors.get(ids[i]) ?? null
+  })
 }
 
 // _struct_conf's types: HELX_P and the other helices, TURN_P and the other turns, and STRN for a strand

@@ -73,6 +73,8 @@ export interface ViewOptions {
   bloomThreshold: number
   // How far each splat spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives
   thermal: number
+  // Draws each atom as its thermal ellipsoid in place of its round splat, which Thermal then doesn't act on
+  ellipsoids: boolean
   focus: Focus
   // What an atom out of focus keeps of its alpha
   fade: number
@@ -107,6 +109,7 @@ export const defaultOptions: ViewOptions = {
   bloomRadius: bloomRadiusDefault,
   bloomThreshold: bloomThresholdDefault,
   thermal: 0,
+  ellipsoids: false,
   focus: 'all',
   fade: 0.15,
   clip: 0,
