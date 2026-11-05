@@ -1,6 +1,6 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect } from 'react'
-import { AdditiveBlending } from 'three'
+import { AdditiveBlending, Vector3, type Intersection } from 'three'
 import { GaussianSplat } from 'three/addons/objects/GaussianSplat.js'
 import {
   createGaussianSplatGeometry,
@@ -9,10 +9,11 @@ import {
 } from 'three/addons/utils/GaussianSplatUtils.js'
 import type { NodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
-import { isShown, useStore } from '../store.ts'
+import { isShown, useStore, type PickTest } from '../store.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
-import { focusTest } from './focus.ts'
+import { focusTest, pickedKey } from './focus.ts'
+import { beyondNear } from './nearPlane.ts'
 import { asWebGPU } from './renderer.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
@@ -42,6 +43,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const thermal = useStore((s) => s.options.thermal)
   const focus = useStore((s) => s.options.focus)
   const fade = useStore((s) => s.options.fade)
+  const picked = useStore((s) => pickedKey(s.options.focus, s.picked))
   const burial = useStore((s) => s.options.burial)
   const blend = useStore((s) => s.options.blend)
 
@@ -53,7 +55,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     const covariances = new Float32Array(shown.length * 6)
     const colors = new Uint8ClampedArray(shown.length * 4)
     const rgb = atomColors(shown, colorBy, atoms, burial)
-    const inFocus = focusTest(atoms, focus)
+    const inFocus = focusTest(atoms, focus, picked)
 
     shown.forEach((atom, i) => {
       centers[i * 3] = atom.x - bounds.center.x
@@ -85,14 +87,48 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       if (!('isWebGPUBackend' in renderer.backend)) splat.updateSort(renderer, camera)
     }
 
+    // A ray picks the nearest splat it passes through, whose index is its atom's place among the shown atoms. three
+    // skips the faintest splats, so atoms faded far out of focus can't be picked. A splat whose centre is nearer than
+    // the near plane isn't drawn at all, so it can't be picked either
+    const hits: Intersection[] = []
+    const center = new Vector3()
+    const pick: PickTest = (raycaster, hit) => {
+      hits.length = 0
+      splat.raycast(raycaster, hits)
+      for (let h = 0; h < hits.length; h++) {
+        const { index, distance } = hits[h]
+        if (index === undefined || distance >= hit.distance) continue
+        if (!beyondNear(center.fromArray(centers, index * 3), raycaster.camera)) continue
+        hit.atom = shown[index]
+        hit.distance = distance
+      }
+    }
+    const unregister = useStore.getState().registerPick(pick)
+
     // GaussianSplat has no dispose(): its storage buffers go when it's garbage-collected, so nothing keeps it
     return () => {
+      unregister()
       scene.remove(splat)
       splat.geometry.dispose()
       splat.material.dispose()
       geometry.dispose()
     }
-  }, [get, atoms, bounds, colorBy, scale, hydrogens, waters, thermal, focus, fade, burial, blend, colorNode])
+  }, [
+    get,
+    atoms,
+    bounds,
+    colorBy,
+    scale,
+    hydrogens,
+    waters,
+    thermal,
+    focus,
+    fade,
+    picked,
+    burial,
+    blend,
+    colorNode,
+  ])
 
   return null
 }

@@ -4,16 +4,18 @@ import { BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight }
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
-import { isShown, useStore, type ColorBy } from '../store.ts'
+import { isShown, useStore, type ColorBy, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
+import { nearestSphere, type SphereHit } from './raySpheres.ts'
 
 interface Props {
   bounds: Bounds
 }
 
-// A drawn surface, with what a recolour needs: the atoms it was built from, and each vertex's atom among them
+// A drawn surface, with what a recolour needs: the atoms it was built from, and each vertex's atom among them; and
+// what removes its pick when it goes
 interface Surface {
   mesh: Mesh<BufferGeometry, MeshStandardNodeMaterial>
   // The same mesh, drawn first into depth alone, so that a see-through surface shows only its nearest layer
@@ -22,6 +24,7 @@ interface Surface {
   atoms: Atom[]
   shown: Atom[]
   owners: Uint32Array
+  unregister: () => void
 }
 
 // The shown atoms' surface, meshed by marching cubes in a worker, and lit from above and below and from the camera
@@ -100,6 +103,16 @@ export function ProteinSurface({ bounds }: Props) {
         geometry.setIndex(new BufferAttribute(built.indices, 1))
         geometry.computeBoundingSphere()
 
+        // A ray picks the atom whose sphere it enters first, among those this surface was meshed from. Each surface
+        // brings its own pick, so that a pointer held still is tested again when a new surface is drawn
+        const sphereHit: SphereHit = { index: -1, distance: 0 }
+        const pick: PickTest = (raycaster, hit) => {
+          nearestSphere(raycaster.ray, centers, radii, raycaster.camera, sphereHit)
+          if (sphereHit.index < 0 || sphereHit.distance >= hit.distance) return
+          hit.atom = shown[sphereHit.index]
+          hit.distance = sphereHit.distance
+        }
+
         const next: Surface = {
           mesh: new Mesh(geometry, surfaceMaterial),
           depth: new Mesh(geometry, surfaceDepth),
@@ -107,6 +120,7 @@ export function ProteinSurface({ bounds }: Props) {
           atoms,
           shown,
           owners: built.owners,
+          unregister: useStore.getState().registerPick(pick),
         }
         const { options } = useStore.getState()
         paint(next, options.colorBy, options.burial)
@@ -163,7 +177,8 @@ function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy, buri
   colors.needsUpdate = true
 }
 
-function discard(scene: Object3D, { mesh, depth }: Surface) {
+function discard(scene: Object3D, { mesh, depth, unregister }: Surface) {
+  unregister()
   scene.remove(mesh, depth)
   mesh.geometry.dispose()
 }

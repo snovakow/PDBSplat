@@ -1,3 +1,4 @@
+import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
@@ -27,8 +28,8 @@ export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
 export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow'
 
-// Which atoms the splat styles keep in focus, fading the rest
-export type Focus = 'all' | 'ligands' | 'backbone'
+// Which atoms the splat styles keep in focus, fading the rest: residue and chain keep the picked atom's
+export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
 
 // How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow
 export type Blend = 'normal' | 'glow'
@@ -67,6 +68,8 @@ export interface ViewOptions {
   focus: Focus
   // What an atom out of focus keeps of its alpha
   fade: number
+  // How far the near plane cuts into the structure from its front, from none at 0 to all of it at 1
+  clip: number
 }
 
 // Bloom's spread and threshold until the panel moves them, chosen by eye on the antibody example in glow: a halo
@@ -96,11 +99,22 @@ export const defaultOptions: ViewOptions = {
   thermal: 0,
   focus: 'all',
   fade: 0.15,
+  clip: 0,
 }
 
 export function isShown(atom: Atom, options: Pick<ViewOptions, 'hydrogens' | 'waters'>) {
   return (options.hydrogens || !atom.hydrogen) && (options.waters || !atom.water)
 }
+
+// The nearest atom a ray has met so far, and how far along the ray, or null and Infinity before any
+export interface PickHit {
+  atom: Atom | null
+  distance: number
+}
+
+// A drawing component's test of a ray against the atoms it draws, which writes its nearest hit into hit when that's
+// nearer than the one already there
+export type PickTest = (raycaster: Raycaster, hit: PickHit) => void
 
 interface State {
   // The entry shown, which stays until the next one is ready
@@ -113,6 +127,15 @@ interface State {
   load: (id: string) => Promise<void>
   options: ViewOptions
   setOptions: (changes: Partial<ViewOptions>) => void
+  // The atom under the pointer and the one last clicked, both of the shown entry, which a new entry clears
+  hovered: Atom | null
+  picked: Atom | null
+  hover: (atom: Atom | null) => void
+  pick: (atom: Atom | null) => void
+  // A pick for each drawing component's atoms while they're drawn, which the pointer's ray is tested against
+  picks: readonly PickTest[]
+  // Adds a pick, and returns what removes it
+  registerPick: (pick: PickTest) => () => void
 }
 
 export const useStore = create<State>()((set) => ({
@@ -122,17 +145,26 @@ export const useStore = create<State>()((set) => ({
   status: 'idle',
   error: null,
   options: defaultOptions,
+  hovered: null,
+  picked: null,
+  picks: [],
   // Unchanged values keep the same options object, so the scene doesn't rebuild for nothing
   setOptions: (changes) =>
     set((state) => {
       const options = { ...state.options, ...changes }
       return shallow(options, state.options) ? state : { options }
     }),
+  hover: (hovered) => set((state) => (state.hovered === hovered ? state : { hovered })),
+  pick: (picked) => set((state) => (state.picked === picked ? state : { picked })),
+  registerPick: (pick) => {
+    set((state) => ({ picks: [...state.picks, pick] }))
+    return () => set((state) => ({ picks: state.picks.filter((registered) => registered !== pick) }))
+  },
   load: async (id) => {
     set({ status: 'loading', error: null })
     try {
       const entry = await fetchEntry(id)
-      set({ id: entry.id, title: entry.title, atoms: entry.atoms, status: 'ready' })
+      set({ id: entry.id, title: entry.title, atoms: entry.atoms, status: 'ready', hovered: null, picked: null })
       const count = (test: (atom: Atom) => boolean) => entry.atoms.filter(test).length
       console.info(
         `PDBSplat: ${entry.id}, "${entry.title}": ${entry.atoms.length} atoms, ` +

@@ -15,6 +15,8 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
 ## Controls
 
 - **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
+- **Point** at an atom, in any style, and a label beside the pointer names it: its atom name and element, its residue and chain, its B-factor, and its occupancy when the atom is only partly there. The label hides while you drag.
+- **Click** or tap an atom to pick it, and click empty space to let it go. Even a faint atom can be picked, but not one that Focus has faded far out.
 - The **panel** at the top right. Its folders hide the controls the chosen style doesn't use:
   - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
   - **Look:**
@@ -34,11 +36,12 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
   - **Atoms:**
     - **Hydrogens** and **Waters** show or hide those atoms. Hydrogens start shown and waters hidden.
     - **Thermal**, for the soft splats and the spheres, blurs or swells each atom by how far its B-factor says it moves, so mobile loops spread out while the core stays crisp.
-    - **Focus**, for the soft splats and the spheres, keeps every atom in focus, or only the ligands and the residues that hold them, or only the backbone: a protein's main chain, or a nucleic acid's sugars and phosphates. **Fade** sets how faintly the atoms out of focus are drawn.
+    - **Focus**, for the soft splats and the spheres, keeps every atom in focus, or only the ligands and the residues that hold them, or only the backbone: a protein's main chain, or a nucleic acid's sugars and phosphates, or only the picked atom's residue or its whole chain. **Fade** sets how faintly the atoms out of focus are drawn.
   - **Scene:**
     - **Depth cue** darkens the far side of the structure, in every style, so its depth reads at a glance. It stays tied to the structure as you orbit, zoom or pan.
+    - **Clip** cuts away the near part of the structure, in every style, to show its inside: halfway along, the front half is gone. The cut faces you whichever way you orbit. The splat styles lose whole atoms, while the surface shows where it's cut.
     - **Bloom** spreads a soft glow around the bright parts of the scene, in every style. While it's on, **Radius** and **Threshold** below it set how far the glow spreads and how bright a part must be to give off any.
-  - **Info:** **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing. **Entry**, **Atoms shown** and **Status** report the entry's ID and title, how many atoms are drawn, and whether it's loading or why a load failed.
+  - **Info:** **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing. **Entry**, **Atoms shown**, **Picked** and **Status** report the entry's ID and title, how many atoms are drawn, the picked atom, and whether it's loading or why a load failed.
 - Every slider but **Size**, **Resolution**, **Thermal**, **Fade** and **Burial** takes effect at once, as it doesn't rebuild the atoms.
 - The counter at the top left shows the frame rate.
 
@@ -59,7 +62,7 @@ To build it, run `npm run build`. It makes a static site in `dist/` that works f
 
 ## Status
 
-PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above. The ideas below are where it may go next, along with more colourings, naming the atom under the pointer, and playing an NMR entry's models as an animation.
+PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above. The ideas below are where it may go next, along with more colourings and playing an NMR entry's models as an animation.
 
 ## Stack
 

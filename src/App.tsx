@@ -2,6 +2,8 @@ import { Canvas } from '@react-three/fiber'
 import { button, folder, LevaInputs, useControls } from 'leva'
 import { useCallback, useEffect, useState } from 'react'
 import { WebGPURenderer } from 'three/webgpu'
+import { AtomLabel } from './AtomLabel.tsx'
+import { atomText } from './atomText.ts'
 import {
   defaultOptions,
   examples,
@@ -124,6 +126,7 @@ function App() {
       <Canvas key={forceWebGL ? 'webgl' : 'webgpu'} gl={gl} camera={camera} flat>
         <Viewer />
       </Canvas>
+      <AtomLabel />
       <Panel forceWebGL={forceWebGL} setForceWebGL={setForceWebGL} renderer={renderer} />
     </>
   )
@@ -147,7 +150,13 @@ const colorByOptions = {
   'B-factor': 'bfactor',
   rainbow: 'rainbow',
 } satisfies Record<string, ColorBy>
-const focusOptions = { all: 'all', ligands: 'ligands', backbone: 'backbone' } satisfies Record<string, Focus>
+const focusOptions = {
+  all: 'all',
+  ligands: 'ligands',
+  backbone: 'backbone',
+  'picked residue': 'residue',
+  'picked chain': 'chain',
+} satisfies Record<string, Focus>
 const blendOptions = { normal: 'normal', glow: 'glow' } satisfies Record<string, Blend>
 
 interface PanelProps {
@@ -165,6 +174,7 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   const status = useStore((s) => s.status)
   const error = useStore((s) => s.error)
   const shown = useStore((s) => s.atoms.filter((atom) => isShown(atom, s.options)).length)
+  const picked = useStore((s) => s.picked)
 
   const [, set] = useControls(() => {
     const { load, setOptions } = useStore.getState()
@@ -331,6 +341,14 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           step: 0.05,
           onChange: (depthCue: number) => setOptions({ depthCue }),
         },
+        clip: {
+          label: 'Clip',
+          value: defaultOptions.clip,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          onChange: (clip: number) => setOptions({ clip }),
+        },
         bloom: {
           label: 'Bloom',
           value: defaultOptions.bloom,
@@ -373,6 +391,7 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
         renderer: { label: 'Renderer', value: '', editable: false },
         entry: { label: 'Entry', value: '', editable: false },
         shown: { label: 'Atoms shown', value: '', editable: false },
+        picked: { label: 'Picked', value: '', editable: false },
         status: { label: 'Status', value: '', editable: false },
       }),
     }
@@ -396,6 +415,10 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       status: error ?? statusText[status],
     })
   }, [set, id, title, shown, status, error])
+
+  useEffect(() => {
+    set({ picked: picked ? atomText(picked) : '' })
+  }, [set, picked])
 
   return null
 }

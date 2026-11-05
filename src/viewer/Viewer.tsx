@@ -2,8 +2,10 @@ import { OrbitControls, Stats } from '@react-three/drei'
 import { useRef, type ComponentRef } from 'react'
 import { useStore } from '../store.ts'
 import { useBounds } from './bounds.ts'
+import { Clip } from './Clip.tsx'
 import { Effects } from './Effects.tsx'
 import { Framing } from './Framing.tsx'
+import { Picking } from './Picking.tsx'
 import { ProteinSplats } from './ProteinSplats.tsx'
 import { ProteinSurface } from './ProteinSurface.tsx'
 import { ShadingUniforms } from './ShadingUniforms.tsx'
@@ -20,6 +22,8 @@ export function Viewer() {
       <OrbitControls ref={controlsRef} makeDefault />
       <Stats />
       <Framing controlsRef={controlsRef} bounds={bounds} />
+      <Clip bounds={bounds} />
+      <Picking />
       <ShadingUniforms bounds={bounds} />
       {style.kind === 'splats' ? (
         <ProteinSplats bounds={bounds} colorNode={style.colorNode} />

@@ -4,6 +4,7 @@ import { useEffect, type ComponentRef, type RefObject } from 'react'
 import { MathUtils, PerspectiveCamera } from 'three'
 import { useStore } from '../store.ts'
 import type { Bounds } from './bounds.ts'
+import { baseNear } from './nearPlane.ts'
 
 // Room around the structure when it's framed
 const frameMargin = 1.15
@@ -28,7 +29,7 @@ export function Framing({ controlsRef, bounds }: Props) {
     const distance = (bounds.radius / Math.sin(Math.min(halfFov, halfFovX))) * frameMargin
 
     camera.position.set(0, 0, distance)
-    camera.near = bounds.radius / 100
+    camera.near = baseNear(bounds.radius)
     camera.far = distance * 4 + bounds.radius
     camera.updateProjectionMatrix()
     // Zooming out stops well before the far plane would clip the structure
