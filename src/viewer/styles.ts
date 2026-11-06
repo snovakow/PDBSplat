@@ -66,3 +66,9 @@ export function isDepthWritten(options: SphereOptions) {
 export function isOpaque(options: SphereOptions) {
   return isSolid(options) || (options.style === 'surface' && options.opacity === 1)
 }
+
+// Whether the splats are summed by weight rather than laid over one another: the weighted Blend, in a splat style, as
+// the surface takes no Blend
+export function isWeighted(options: Pick<ViewOptions, 'style' | 'blend'>) {
+  return options.blend === 'weighted' && styleOf(options.style).kind === 'splats'
+}

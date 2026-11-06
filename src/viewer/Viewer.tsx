@@ -10,14 +10,17 @@ import { Picking } from './Picking.tsx'
 import { ProteinSplats } from './ProteinSplats.tsx'
 import { ProteinSurface } from './ProteinSurface.tsx'
 import { ShadingUniforms } from './ShadingUniforms.tsx'
-import { isOpaque, styleOf } from './styles.ts'
+import { isOpaque, isWeighted, styleOf } from './styles.ts'
 
 export function Viewer() {
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null)
   const bounds = useBounds()
   const style = useStore((s) => styleOf(s.options.style))
-  // The pipeline renders the scene only while it has something to add: bloom, or ambient occlusion on an opaque scene
-  const effects = useStore((s) => s.options.bloom > 0 || (s.options.ao > 0 && isOpaque(s.options)))
+  // The pipeline renders the scene only while it has something to add: bloom, the weighted blend's sums and their
+  // composite, or ambient occlusion on an opaque scene
+  const effects = useStore(
+    (s) => s.options.bloom > 0 || isWeighted(s.options) || (s.options.ao > 0 && isOpaque(s.options)),
+  )
   const playing = useStore((s) => s.options.models === 'play')
   return (
     <>

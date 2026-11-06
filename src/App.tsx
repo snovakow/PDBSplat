@@ -165,7 +165,7 @@ const focusOptions = {
   'picked residue': 'residue',
   'picked chain': 'chain',
 } satisfies Record<string, Focus>
-const blendOptions = { normal: 'normal', glow: 'glow' } satisfies Record<string, Blend>
+const blendOptions = { normal: 'normal', glow: 'glow', weighted: 'weighted' } satisfies Record<string, Blend>
 
 interface PanelProps {
   forceWebGL: boolean

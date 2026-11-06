@@ -31,8 +31,9 @@ export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow' | 'structure'
 // Which atoms the splat styles keep in focus, fading the rest: residue and chain keep the picked atom's
 export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
 
-// How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow
-export type Blend = 'normal' | 'glow'
+// How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow, or
+// summed by how near and how opaque each is, so that the order they're drawn in never matters
+export type Blend = 'normal' | 'glow' | 'weighted'
 
 // Which of an entry's models are shown: the first, every one at once, or each in turn
 export type Models = 'first' | 'all' | 'play'

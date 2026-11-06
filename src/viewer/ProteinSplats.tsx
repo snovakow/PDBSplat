@@ -90,14 +90,17 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       writeColorBytes(colors, i * 4, rgb[i * 3] * 255, rgb[i * 3 + 1] * 255, rgb[i * 3 + 2] * 255, alpha)
     })
 
-    // Added light doesn't depend on the order it's drawn in, and nor do solid spheres, as each pixel keeps the nearest,
-    // so neither is sorted as the camera moves
-    const glow = blend === 'glow'
-    const sorted = !glow && !solid
+    // Added light doesn't depend on the order it's drawn in, nor does a weighted sum, and nor do solid spheres, as each
+    // pixel keeps the nearest, so none of them is sorted as the camera moves
+    const additive = blend === 'glow' || blend === 'weighted'
+    const sorted = !additive && !solid
     const geometry = createGaussianSplatGeometry(centers, covariances, colors)
     const splat = new GaussianSplat(geometry, { autoSort: sorted })
     splat.material.colorNode = solid ? solidSphereColor : colorNode
-    if (glow) splat.material.blending = AdditiveBlending
+    if (additive) splat.material.blending = AdditiveBlending
+    // A weighted splat adds its colour and its alpha into the sums the composite resolves, so it writes its colour
+    // already multiplied by its alpha, and the blend adds both as they are
+    if (blend === 'weighted') splat.material.premultipliedAlpha = true
     // A solid sphere writes the depth of its surface, and its edge's fade sets how much of each pixel it covers, so its
     // rim stays smooth with nothing behind it showing through
     if (solid) {

@@ -25,7 +25,7 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
     - **Size** scales every atom, and **Opacity** sets how much they let through, in every style. At full Opacity the spheres turn solid: each hides what's behind it, and spheres that meet cut into one another along curved creases, as in a space-filling model. They stay solid while every atom is drawn whole and round: in normal Blend, with Focus on all or Fade at full, Models and Alternates on first, and Ellipsoids off. Below full Opacity, under the same conditions and down to two thirds, the spheres keep their creases, and each lets through only what lies behind its surface.
     - **Hardness**, for the soft splats, firms their edges, from a soft Gaussian falloff to a flat disc.
     - **Shading**, **Highlight**, **Shininess** and **Outline**, for the spheres, set how far each darkens towards its rim, how bright and how tight its highlight is, and the width of an inked rim that outlines it.
-    - **Blend**, for the soft splats and the spheres, lays each splat over what's behind it, or, in glow, adds its light to it, so dense parts glow like an X-ray, with **Opacity** setting how brightly.
+    - **Blend**, for the soft splats and the spheres, lays each splat over what's behind it, or, in glow, adds its light to it, so dense parts glow like an X-ray, with **Opacity** setting how brightly. In weighted, each splat adds its colour by how near and how opaque it is, so nothing depends on the order they're drawn in and nothing flips as the view turns, and the structure reads more like an X-ray than like layered spheres.
   - **Colour:**
     - **Colour by** colours each atom by one of five things, in every style:
       - its **element**, as described above

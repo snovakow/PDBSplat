@@ -1,5 +1,6 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
+import { Color, Vector4 } from 'three'
 import type BloomNode from 'three/addons/tsl/display/BloomNode.js'
 import { bloom } from 'three/addons/tsl/display/BloomNode.js'
 import type SSAONode from 'three/addons/tsl/display/SSAONode.js'
@@ -8,7 +9,8 @@ import { getNormalFromDepth, mix, pass, sample, uniform, vec4 } from 'three/tsl'
 import { RenderPipeline, type Node, type PassNode, type UniformNode } from 'three/webgpu'
 import { useStore } from '../store.ts'
 import { asWebGPU } from './renderer.ts'
-import { isOpaque } from './styles.ts'
+import { isOpaque, isWeighted } from './styles.ts'
+import { weightedBlend } from './weighted.ts'
 
 // Above R3F's own render, which a frame callback at a higher priority takes over until it unmounts
 const renderPriority = 1
@@ -24,11 +26,13 @@ interface Stage {
   scenePass: PassNode
 }
 
-// The scene drawn through a pipeline of passes, in place of R3F's own render: ambient occlusion darkens its crevices
-// while everything in it is opaque, and bloom spreads a glow around its bright parts. It renders only while it's
-// mounted, so the scene renders directly whenever there's no effect to apply
+// The scene drawn through a pipeline of passes, in place of R3F's own render: the weighted blend sums the splats into
+// two targets and composites them, ambient occlusion darkens the scene's crevices while everything in it is opaque,
+// and bloom spreads a glow around its bright parts. It renders only while it's mounted, so the scene renders directly
+// whenever there's no effect to apply
 export function Effects() {
   const get = useThree((s) => s.get)
+  const weighted = useStore((s) => isWeighted(s.options))
   const bloomOn = useStore((s) => s.options.bloom > 0)
   const strength = useStore((s) => s.options.bloom)
   const radius = useStore((s) => s.options.bloomRadius)
@@ -58,10 +62,26 @@ export function Effects() {
   useEffect(() => {
     if (!stage.current) return undefined
     const { pipeline, scenePass } = stage.current
-    const { scene, camera } = get()
+    const { gl, scene, camera } = get()
     const { options } = useStore.getState()
-    const sceneColor = scenePass.getTextureNode('output')
     const made: Node[] = []
+    let sceneColor: Node<'vec4'> = scenePass.getTextureNode('output')
+
+    if (weighted) {
+      // A pass of its own sums the splats into two targets, which the composite resolves, and the scene pass draws
+      // nothing meanwhile. The targets take no multisampling, as the soft splats don't alias and the spheres' rims
+      // are fades, and the renderer's half-float output type, which holds the sums without clipping. The composite
+      // lays the sum over the colour the pass is cleared to, which the sorted blend lays its splats over, taken as it
+      // is when the blend turns on
+      const renderer = asWebGPU(gl)
+      const sumPass = pass(scene, camera, { samples: 0 })
+      const clear = renderer.getClearColor(new Color())
+      const background = uniform(new Vector4(clear.r, clear.g, clear.b, renderer.getClearAlpha()))
+      const { targets, composite } = weightedBlend(sumPass, background)
+      sceneColor = composite
+      made.push(sumPass, background, targets, composite)
+    }
+
     let output: Node<'vec4'> = sceneColor
 
     if (aoOn) {
@@ -100,7 +120,7 @@ export function Effects() {
       occlusionAmount.current = null
       for (const node of made) node.dispose()
     }
-  }, [get, aoOn, bloomOn])
+  }, [get, weighted, aoOn, bloomOn])
 
   useEffect(() => {
     if (glow.current) glow.current.strength.value = strength
