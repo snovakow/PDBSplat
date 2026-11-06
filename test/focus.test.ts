@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { residueKey, type Atom } from '../src/pdb/mmcif.ts'
-import type { Focus } from '../src/store.ts'
+import type { Focus } from '../src/options.ts'
 import { bindingSite, focusTest, pickedKey } from '../src/viewer/focus.ts'
 
 // Which atoms each Focus keeps, on small residue sets built here
@@ -21,7 +21,6 @@ const base: Atom = {
   bFactor: 20,
   model: 1,
   firstConformation: true,
-  hetero: false,
   polymer: true,
   hydrogen: false,
   water: false,

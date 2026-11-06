@@ -27,7 +27,7 @@ import {
   vec4,
   viewZToPerspectiveDepth,
 } from 'three/tsl'
-import { defaultOptions, type ViewOptions } from '../store.ts'
+import { defaultOptions, type ViewOptions } from '../options.ts'
 
 // The splat styles' colour nodes, which replace GaussianSplat's own, and the depth cue every style shares.
 // They read the splat's own varyings by name: its position across the splat, in standard deviations, and its colour.

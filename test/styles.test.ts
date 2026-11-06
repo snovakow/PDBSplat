@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Blend, Conformations, Models, ViewOptions } from '../src/store.ts'
+import type { Blend, Conformations, Models, ViewOptions } from '../src/options.ts'
 import {
   depthWriteOpacity,
   isDepthWritten,

@@ -3,7 +3,7 @@ import { burial } from '../pdb/burial.ts'
 import { elementColor } from '../pdb/elements.ts'
 import { defaultAtoms, residueKey, type Atom, type SecondaryStructure } from '../pdb/mmcif.ts'
 import { percentile } from '../pdb/percentile.ts'
-import type { ColorBy } from '../store.ts'
+import type { ColorBy } from '../options.ts'
 
 // The chain and rainbow colourings' saturation and lightness, in three's HSL over the working colour space
 const saturation = 0.75

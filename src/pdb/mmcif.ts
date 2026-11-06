@@ -22,7 +22,6 @@ export interface Atom {
   // In its residue's first conformation within its model: without an alternate ID, or with the first one the residue
   // lists there
   firstConformation: boolean
-  hetero: boolean
   // In a polymer chain, as a modified residue such as selenomethionine is though it's a HETATM record;
   // ligands, sugars and waters aren't
   polymer: boolean
@@ -312,7 +311,6 @@ function atomReader(columns: string[]) {
       bFactor: Number(bFactor(row) || 0),
       model: modelNumber,
       firstConformation,
-      hetero: group(row) === 'HETATM',
       polymer: sequenced ? place !== '' : group(row) === 'ATOM',
       hydrogen: symbol === 'H' || symbol === 'D',
       water: waterNames.has(name),

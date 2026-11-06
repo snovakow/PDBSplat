@@ -1,9 +1,9 @@
 import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
+import { defaultOptions, type ViewOptions } from './options.ts'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import { defaultAtoms, type Atom } from './pdb/mmcif.ts'
-import type { Style } from './viewer/styles.ts'
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
 export const examples = [
@@ -26,105 +26,6 @@ export const firstEntry: string = examples[0].id
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
-export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow' | 'structure'
-
-// Which atoms the splat styles keep in focus, fading the rest: residue and chain keep the picked atom's
-export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
-
-// How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow, or
-// summed by how near and how opaque each is, so that the order they're drawn in never matters
-export type Blend = 'normal' | 'glow' | 'weighted'
-
-// Which of an entry's models are shown: the first, every one at once, or each in turn
-export type Models = 'first' | 'all' | 'play'
-
-// Which conformations are shown of the residues that have alternate locations: the first each lists, or every one
-export type Conformations = 'first' | 'all'
-
-// What the panel sets and the scene draws
-export interface ViewOptions {
-  colorBy: ColorBy
-  style: Style
-  // Times each atom's van der Waals radius
-  scale: number
-  opacity: number
-  hydrogens: boolean
-  waters: boolean
-  models: Models
-  conformations: Conformations
-  // The surface style's grid points per ångström: higher meshes it more finely, and more slowly
-  resolution: number
-  // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1
-  hardness: number
-  // The spheres style's lighting: how much the shade falls off towards the rim, the highlight's strength,
-  // how tight the highlight is, and the width of an ink rim, as a fraction of each sphere's radius
-  shading: number
-  highlight: number
-  shininess: number
-  outline: number
-  // How far the far side of the structure darkens, from none at 0 to black at 1
-  depthCue: number
-  // How far buried atoms darken, from none at 0 to black for the most buried at 1
-  burial: number
-  blend: Blend
-  // The strength of a glow spread around bright parts of the scene, how far it spreads, from 0 to 1, and the
-  // brightness, from 0 to 1, below which nothing glows
-  bloom: number
-  bloomRadius: number
-  bloomThreshold: number
-  // How far ambient occlusion darkens the crevices of solid spheres or an opaque surface, from none at 0 to all of it
-  // at 1, and how far around each point it looks for what shades it, in ångströms
-  ao: number
-  aoRadius: number
-  // How far each splat spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives
-  thermal: number
-  // Draws each atom as its thermal ellipsoid in place of its round splat, which Thermal then doesn't act on
-  ellipsoids: boolean
-  focus: Focus
-  // What an atom out of focus keeps of its alpha
-  fade: number
-  // How far the near plane cuts into the structure from its front, from none at 0 to all of it at 1
-  clip: number
-}
-
-// Bloom's spread and threshold until the panel moves them, chosen by eye on the antibody example in glow: a halo
-// that hazes the space around the structure, from its dense core and bright atoms but not its faint edges
-const bloomRadiusDefault = 0.4
-const bloomThresholdDefault = 0.3
-// Ambient occlusion's reach until the panel moves it, in ångströms, chosen by eye on the crambin and antibody examples:
-// about an atom's width, so the contacts between neighbouring atoms darken while open faces stay bright
-const aoRadiusDefault = 3
-
-export const defaultOptions: ViewOptions = {
-  colorBy: 'element',
-  style: 'soft',
-  scale: 1,
-  opacity: 0.9,
-  hydrogens: true,
-  waters: false,
-  models: 'first',
-  conformations: 'first',
-  resolution: 2,
-  hardness: 0,
-  shading: 0.75,
-  highlight: 0.35,
-  shininess: 24,
-  outline: 0,
-  depthCue: 0,
-  burial: 0,
-  blend: 'normal',
-  bloom: 0,
-  bloomRadius: bloomRadiusDefault,
-  bloomThreshold: bloomThresholdDefault,
-  ao: 0,
-  aoRadius: aoRadiusDefault,
-  thermal: 0,
-  ellipsoids: false,
-  focus: 'all',
-  fade: 0.15,
-  clip: 0,
-}
-
 // Whether an atom is drawn, by Hydrogens, Waters and Conformations, and by the model shown, or every model for null
 export function isShown(
   atom: Atom,
@@ -143,6 +44,41 @@ export function isShown(
 export function shownModel(state: { options: ViewOptions; models: readonly number[]; model: number }): number | null {
   if (state.options.models === 'all') return null
   return state.options.models === 'play' ? state.model : (state.models[0] ?? state.model)
+}
+
+// What the shown atoms were last selected from, and the selection, so that the same array comes back while they stand
+interface ShownAtoms {
+  atoms: readonly Atom[]
+  hydrogens: boolean
+  waters: boolean
+  conformations: ViewOptions['conformations']
+  model: number | null
+  shown: readonly Atom[]
+}
+let lastShown: ShownAtoms | null = null
+
+// The atoms drawn: the entry's atoms that isShown keeps under Hydrogens, Waters, Alternates and the model shown. The
+// same array comes back while those stand, so that the panel's count and the drawing components, which each read it
+// from the store, filter the entry once for every change of it and not at all for any other change, such as of the
+// atom under the pointer
+export function shownAtoms(state: Pick<State, 'atoms' | 'options' | 'models' | 'model'>): readonly Atom[] {
+  const { atoms } = state
+  const { hydrogens, waters, conformations } = state.options
+  const model = shownModel(state)
+  const last = lastShown
+  if (
+    last &&
+    last.atoms === atoms &&
+    last.hydrogens === hydrogens &&
+    last.waters === waters &&
+    last.conformations === conformations &&
+    last.model === model
+  ) {
+    return last.shown
+  }
+  const shown = atoms.filter((atom) => isShown(atom, state.options, model))
+  lastShown = { atoms, hydrogens, waters, conformations, model, shown }
+  return shown
 }
 
 // The nearest atom a ray has met so far, and how far along the ray, or null and Infinity before any

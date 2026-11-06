@@ -4,7 +4,8 @@ import { BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight }
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
-import { isShown, shownModel, useStore, type ColorBy, type PickTest } from '../store.ts'
+import type { ColorBy } from '../options.ts'
+import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
@@ -22,7 +23,7 @@ interface Surface {
   depth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   colors: BufferAttribute
   atoms: Atom[]
-  shown: Atom[]
+  shown: readonly Atom[]
   owners: Uint32Array
   unregister: () => void
 }
@@ -31,14 +32,11 @@ interface Surface {
 export function ProteinSurface({ bounds }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
+  const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const burial = useStore((s) => s.options.burial)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
-  const hydrogens = useStore((s) => s.options.hydrogens)
-  const waters = useStore((s) => s.options.waters)
-  const conformations = useStore((s) => s.options.conformations)
-  const model = useStore(shownModel)
   const resolution = useStore((s) => s.options.resolution)
   const material = useRef<MeshStandardNodeMaterial | null>(null)
   const depthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
@@ -73,7 +71,6 @@ export function ProteinSurface({ bounds }: Props) {
       discard(scene, surface.current)
       surface.current = null
     }
-    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
     if (shown.length === 0) {
       if (surface.current) discard(scene, surface.current)
       surface.current = null
@@ -142,7 +139,7 @@ export function ProteinSurface({ bounds }: Props) {
     return () => {
       if (useStore.getState().options.models !== 'play') request.cancel()
     }
-  }, [get, atoms, bounds, scale, hydrogens, waters, conformations, model, resolution])
+  }, [get, atoms, shown, bounds, scale, resolution])
 
   // A new colouring or Burial repaints the vertices from their atoms, without meshing again
   useEffect(() => {

@@ -9,7 +9,7 @@ import {
 } from 'three/addons/utils/GaussianSplatUtils.js'
 import type { NodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
-import { isShown, shownModel, useStore, type PickTest } from '../store.ts'
+import { shownAtoms, shownModel, useStore, type PickTest } from '../store.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { focusTest, pickedKey } from './focus.ts'
@@ -41,10 +41,10 @@ interface Props {
 export function ProteinSplats({ bounds, colorNode }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
+  const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const scale = useStore((s) => s.options.scale)
-  const hydrogens = useStore((s) => s.options.hydrogens)
-  const waters = useStore((s) => s.options.waters)
+  // The shown atoms already follow Alternates and the model, which the alpha factors below read as well
   const conformations = useStore((s) => s.options.conformations)
   const model = useStore(shownModel)
   const modelCount = useStore((s) => s.models.length)
@@ -59,7 +59,6 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const depthWritten = useStore((s) => isDepthWritten(s.options))
 
   useEffect(() => {
-    const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
     if (shown.length === 0) return undefined
 
     const centers = new Float32Array(shown.length * 3)
@@ -154,11 +153,10 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   }, [
     get,
     atoms,
+    shown,
     bounds,
     colorBy,
     scale,
-    hydrogens,
-    waters,
     conformations,
     model,
     modelCount,

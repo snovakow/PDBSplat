@@ -165,7 +165,6 @@ void test("reads each atom's fields, with their defaults", () => {
   const [iron, deuterium, hydrogen, water] = atoms
   assert.equal(iron.element, 'Fe')
   assert.equal(iron.residueNumber, 142)
-  assert.equal(iron.hetero, true)
   assert.equal(iron.polymer, false)
   assert.equal(iron.water, false)
   assert.equal(iron.hydrogen, false)
@@ -266,10 +265,6 @@ void test('reads polymer from the place in the sequence, or from the record type
   assert.deepEqual(
     sequenced.atoms.map((atom) => atom.polymer),
     [true, true, false, false],
-  )
-  assert.deepEqual(
-    sequenced.atoms.map((atom) => atom.hetero),
-    [false, true, true, true],
   )
   const unsequenced = parseMmcif(
     atomTable(

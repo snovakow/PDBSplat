@@ -1,6 +1,6 @@
 import { residueKey, type Atom } from '../pdb/mmcif.ts'
 import { neighbourGrid } from '../pdb/neighbours.ts'
-import type { Focus } from '../store.ts'
+import type { Focus } from '../options.ts'
 
 // Which atoms a Focus keeps, so the splat styles can fade the rest
 

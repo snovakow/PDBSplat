@@ -20,7 +20,6 @@ const base: Atom = {
   bFactor: 20,
   model: 1,
   firstConformation: true,
-  hetero: false,
   polymer: true,
   hydrogen: false,
   water: false,
