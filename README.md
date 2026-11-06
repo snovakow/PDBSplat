@@ -63,7 +63,7 @@ npm run dev
 
 and open the address it prints.
 
-To build it, run `npm run build`. It makes a static site in `dist/` that works from any folder on any web server, and `npm run preview` serves it locally.
+To build it, run `npm run build`. It makes a static site in `dist/` that works from any folder on any web server, and `npm run preview` serves it locally. `npm test` runs the tests, on Node's own test runner, and needs Node.js 22.18 or later, which runs TypeScript without a flag.
 
 ## Status
 
@@ -90,7 +90,8 @@ Around them are drei's helpers, a leva control panel, zustand for app state, and
 ## Workflow
 
 - **Planned in phases.** The project was set up by following a written plan. Each phase was one focused thread, and the phases that changed code ended with lint and a type-checked production build passing.
-- **Reviewed before it's committed.** Every batch of work goes through `/commit`, a [Claude Code skill](.claude/skills/commit/SKILL.md) that serves as the final code review. It's adapted from a shared [baseline](https://github.com/snovakow/Claude-Skills/tree/main/skills/commit), and it runs in a fresh thread, so the review starts without the author's assumptions. It reads every changed line for bugs, React Three Fiber and three.js pitfalls, type and lint escapes, new dependencies, leftovers and anything that shouldn't be public. Then it runs the checks, splits the work into focused commits with descriptive messages, and keeps this README accurate.
+- **Reviewed before it's committed.** Every batch of work goes through `/commit`, a [Claude Code skill](.claude/skills/commit/SKILL.md) that serves as the final code review. It's adapted from a shared [baseline](https://github.com/snovakow/Claude-Skills/tree/main/skills/commit), and it runs in a fresh thread, so the review starts without the author's assumptions. It reads every changed line for bugs, React Three Fiber and three.js pitfalls, type and lint escapes, new dependencies, leftovers and anything that shouldn't be public. Then it runs the checks, the tests among them, splits the work into focused commits with descriptive messages, and keeps this README accurate.
+- **Tested where it's pure.** The parts with no GPU or React in them, such as the mmCIF reader, the surface mesher, the colourings and the rules that decide what's shown, have tests that build their own inputs and pin what each guarantees, and each review runs them with the other checks.
 - **Versioned checkpoints.** Versions start at 0.0.0 and count up: each reviewed batch ends with a version commit, which marks where the next review starts.
 - **Current dependencies.** Packages and tools track their latest releases, and each review reports anything that has fallen behind.
 - **Branches and deploys.** Work lands on `development` and reaches `main` by merge. The live site is a static build of `main`.
