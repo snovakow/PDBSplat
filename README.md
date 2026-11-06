@@ -20,7 +20,7 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
 - The **panel** at the top right. Its folders hide the controls the chosen style doesn't use:
   - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
   - **Look:**
-    - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes.
+    - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes, on which the atoms' colours meet along clean boundaries.
     - **Resolution**, for the surface only, sets how finely it's meshed, in grid points per ångström: from 0.5 to 4, where higher shows more detail, and takes longer. Large entries are meshed more coarsely where needed, to keep within about ten million triangles.
     - **Size** scales every atom, and **Opacity** sets how much they let through, in every style. At full Opacity the spheres turn solid: each hides what's behind it, and spheres that meet cut into one another along curved creases, as in a space-filling model. They stay solid while every atom is drawn whole and round: in normal Blend, with Focus on all or Fade at full, Models and Alternates on first, and Ellipsoids off.
     - **Hardness**, for the soft splats, firms their edges, from a soft Gaussian falloff to a flat disc.

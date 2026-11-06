@@ -32,7 +32,8 @@ const k = 1.2
 // The most triangles a surface may have: about what a strong desktop GPU draws smoothly, with an index buffer of
 // 120 MB, inside WebGPU's default 256 MB limit. A spacing that would give more is coarsened to fit
 const maxTriangles = 10_000_000
-// A quick count at this spacing estimates the triangles at a finer one, which grow as one over the spacing squared
+// A quick count at this spacing estimates the triangles at a finer one, which grow as one over the spacing squared,
+// and the pieces the cut adds, which lie along the boundaries and grow as one over the spacing
 const probeSpacing = 1
 // Marks a grid point no atom reaches
 const noOwner = 0xffffffff
@@ -56,16 +57,27 @@ interface Atoms {
 }
 
 // Marching cubes over the density, with the tables and conventions of three's MarchingCubes:
-// x varies fastest, then y, then z; corners in Paul Bourke's order; a corner's bit is set when it's below the isolevel
-export function meshSurface({ centers, radii, spacing }: SurfaceInput): SurfaceMesh {
+// x varies fastest, then y, then z; corners in Paul Bourke's order; a corner's bit is set when it's below the isolevel.
+// The triangles are then cut where their owners change, so that each has one owner. With sharpen false, the march's
+// triangles stand as they are
+export function meshSurface({ centers, radii, spacing }: SurfaceInput, sharpen = true): SurfaceMesh {
   if (radii.length === 0) return emptyMesh()
   const atoms = prepare(centers, radii)
   const probe = Math.max(spacing, probeSpacing)
-  const estimate = march(atoms, probe, null).triangles
-  const h = Math.max(spacing, probe * Math.sqrt(estimate / maxTriangles))
+  const count = march(atoms, probe, null)
+  const h = budgetSpacing(spacing, probe, count.triangles, sharpen ? count.pieces : 0)
   const builder = new MeshBuilder()
   const { gridPoints } = march(atoms, h, builder)
+  if (sharpen) builder.sharpen(centers, radii)
   return builder.finish(h, gridPoints)
+}
+
+// The finest spacing, no finer than the one asked for, at which the triangles counted at the probe's spacing, grown as
+// one over the spacing squared, and the cut's pieces, grown as one over the spacing, together stay within the budget
+function budgetSpacing(spacing: number, probe: number, triangles: number, pieces: number) {
+  if (triangles === 0) return spacing
+  const finer = (Math.sqrt(pieces * pieces + 4 * triangles * maxTriangles) - pieces) / (2 * triangles)
+  return Math.max(spacing, probe / finer)
 }
 
 function prepare(centers: Float32Array, radii: Float32Array): Atoms {
@@ -85,7 +97,8 @@ function prepare(centers: Float32Array, radii: Float32Array): Atoms {
 }
 
 // Marches the grid one layer of cells at a time, computing the density a plane at a time, so memory holds only the
-// four planes around the current layer. With no builder, it only counts the triangles
+// four planes around the current layer. With no builder, it only counts the triangles, and the pieces the cut would
+// add to them
 function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
   const { centers, radii, byZ, reach2, maxReach } = atoms
   // A spacing more on every side keeps the grid's border outside the surface, so the mesh closes
@@ -160,12 +173,6 @@ function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
     const normalZ = -(gz + t * (gradient[2] - gz))
     const length = Math.hypot(normalX, normalY, normalZ) || 1
 
-    // The owner of the nearer end, or of the other end if no atom reaches the nearer one
-    const ownerA = owners[z & 3][a]
-    const ownerB = owners[zb & 3][b]
-    const near = t < 0.5 ? ownerA : ownerB
-    const far = t < 0.5 ? ownerB : ownerA
-
     return mesh.addVertex(
       lo[0] + (x + (axis === 0 ? t : 0)) * h,
       lo[1] + (y + (axis === 1 ? t : 0)) * h,
@@ -173,8 +180,28 @@ function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
       normalX / length,
       normalY / length,
       normalZ / length,
-      near === noOwner ? far : near,
+      edgeOwner(a, b, z, zb, t),
     )
+  }
+
+  // The owner of a vertex t of the way along the edge from grid point a on plane z to grid point b on plane zb: the
+  // nearer end's, or the other end's if no atom reaches the nearer one
+  const edgeOwner = (a: number, b: number, z: number, zb: number, t: number) => {
+    const ownerA = owners[z & 3][a]
+    const ownerB = owners[zb & 3][b]
+    const near = t < 0.5 ? ownerA : ownerB
+    const far = t < 0.5 ? ownerB : ownerA
+    return near === noOwner ? far : near
+  }
+
+  // The owner of the vertex on the edge from grid point (x, y, z) along the axis, for the count of the cut's pieces
+  const vertexOwner = (x: number, y: number, z: number, axis: 0 | 1 | 2) => {
+    const a = y * nx + x
+    const b = axis === 0 ? a + 1 : axis === 1 ? a + nx : a
+    const zb = axis === 2 ? z + 1 : z
+    const fa = fields[z & 3][a]
+    const fb = fields[zb & 3][b]
+    return edgeOwner(a, b, z, zb, (isolevel - fa) / (fb - fa))
   }
 
   // Central differences, one-sided at the grid's border, where the density is near zero anyway
@@ -195,9 +222,15 @@ function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
     if (cache[key] < 0) cache[key] = addVertex(mesh, x, y, z, axis)
     return cache[key]
   }
+  // Per edge of the current cube, its vertex when building, or its vertex's owner when counting
   const cubeEdges = new Int32Array(12)
+  const cubeEdge = (e: number, cache: Int32Array, x: number, y: number, z: number, axis: 0 | 1 | 2) => {
+    cubeEdges[e] = builder ? edgeVertex(builder, cache, x, y, z, axis) : vertexOwner(x, y, z, axis)
+  }
 
   let triangles = 0
+  // The triangles the cut adds: two for a triangle with two owners, five for one with three
+  let pieces = 0
   let computed = 0
   for (let z = 0; z < nz - 1; z++) {
     while (computed <= Math.min(z + 2, nz - 1)) computePlane(computed++)
@@ -224,29 +257,32 @@ function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
         const edges = edgeTable[cube]
         if (edges === 0) continue
         triangles += cubeTriangles[cube]
-        if (!builder) continue
 
         // Bourke's edges 0 to 11, from the corners they join
-        if (edges & 1) cubeEdges[0] = edgeVertex(builder, xEdges[slab], x, y, z, 0)
-        if (edges & 2) cubeEdges[1] = edgeVertex(builder, yEdges[slab], x + 1, y, z, 1)
-        if (edges & 4) cubeEdges[2] = edgeVertex(builder, xEdges[slab], x, y + 1, z, 0)
-        if (edges & 8) cubeEdges[3] = edgeVertex(builder, yEdges[slab], x, y, z, 1)
-        if (edges & 16) cubeEdges[4] = edgeVertex(builder, xEdges[slab ^ 1], x, y, z + 1, 0)
-        if (edges & 32) cubeEdges[5] = edgeVertex(builder, yEdges[slab ^ 1], x + 1, y, z + 1, 1)
-        if (edges & 64) cubeEdges[6] = edgeVertex(builder, xEdges[slab ^ 1], x, y + 1, z + 1, 0)
-        if (edges & 128) cubeEdges[7] = edgeVertex(builder, yEdges[slab ^ 1], x, y, z + 1, 1)
-        if (edges & 256) cubeEdges[8] = edgeVertex(builder, zEdges, x, y, z, 2)
-        if (edges & 512) cubeEdges[9] = edgeVertex(builder, zEdges, x + 1, y, z, 2)
-        if (edges & 1024) cubeEdges[10] = edgeVertex(builder, zEdges, x + 1, y + 1, z, 2)
-        if (edges & 2048) cubeEdges[11] = edgeVertex(builder, zEdges, x, y + 1, z, 2)
+        if (edges & 1) cubeEdge(0, xEdges[slab], x, y, z, 0)
+        if (edges & 2) cubeEdge(1, yEdges[slab], x + 1, y, z, 1)
+        if (edges & 4) cubeEdge(2, xEdges[slab], x, y + 1, z, 0)
+        if (edges & 8) cubeEdge(3, yEdges[slab], x, y, z, 1)
+        if (edges & 16) cubeEdge(4, xEdges[slab ^ 1], x, y, z + 1, 0)
+        if (edges & 32) cubeEdge(5, yEdges[slab ^ 1], x + 1, y, z + 1, 1)
+        if (edges & 64) cubeEdge(6, xEdges[slab ^ 1], x, y + 1, z + 1, 0)
+        if (edges & 128) cubeEdge(7, yEdges[slab ^ 1], x, y, z + 1, 1)
+        if (edges & 256) cubeEdge(8, zEdges, x, y, z, 2)
+        if (edges & 512) cubeEdge(9, zEdges, x + 1, y, z, 2)
+        if (edges & 1024) cubeEdge(10, zEdges, x + 1, y + 1, z, 2)
+        if (edges & 2048) cubeEdge(11, zEdges, x, y + 1, z, 2)
 
         for (let t = cube * 16; triTable[t] !== -1; t += 3) {
-          builder.addTriangle(cubeEdges[triTable[t]], cubeEdges[triTable[t + 1]], cubeEdges[triTable[t + 2]])
+          const a = cubeEdges[triTable[t]]
+          const b = cubeEdges[triTable[t + 1]]
+          const c = cubeEdges[triTable[t + 2]]
+          if (builder) builder.addTriangle(a, b, c)
+          else if (a !== b || b !== c) pieces += a !== b && b !== c && c !== a ? 5 : 2
         }
       }
     }
   }
-  return { triangles, gridPoints: nxy * nz }
+  return { triangles, pieces, gridPoints: nxy * nz }
 }
 
 // Collects the mesh in typed arrays that double as they fill, since a fine surface can have millions of vertices
@@ -282,6 +318,132 @@ class MeshBuilder {
     this.indices[this.indexCount++] = c
   }
 
+  // Cuts every triangle whose corners have different owners at the points on its edges where the owner changes, so
+  // that each piece has one owner and two atoms' colours meet along a line instead of blending across the triangle.
+  // A crossing is one point written as a vertex per owner, so the pieces on either side share no vertex but meet by
+  // position, and the surface keeps its shape
+  sharpen(centers: Float32Array, radii: Float32Array) {
+    const triangles = this.indices
+    const indexCount = this.indexCount
+    this.indices = new Uint32Array(triangles.length)
+    this.indexCount = 0
+
+    // Each edge's crossing, keyed by the edge's two ends, as the first of its two vertices: the one with the lower end's
+    // owner, then the higher end's. Made once per edge, so the triangles on either side cut it at the same point
+    const stride = this.vertexCount
+    const crossings = new Map<number, number>()
+    // The vertex at the crossing of the edge from v to w that has v's owner
+    const crossing = (v: number, w: number) => {
+      const lo = Math.min(v, w)
+      const hi = Math.max(v, w)
+      const key = lo * stride + hi
+      let first = crossings.get(key)
+      if (first === undefined) {
+        first = this.addCrossing(lo, hi, centers, radii)
+        crossings.set(key, first)
+      }
+      return v === lo ? first : first + 1
+    }
+
+    for (let t = 0; t < indexCount; t += 3) {
+      let a = triangles[t]
+      let b = triangles[t + 1]
+      let c = triangles[t + 2]
+      const ownerA = this.owners[a]
+      const ownerB = this.owners[b]
+      const ownerC = this.owners[c]
+      if (ownerA === ownerB && ownerB === ownerC) {
+        this.addTriangle(a, b, c)
+        continue
+      }
+      if (ownerA !== ownerB && ownerB !== ownerC && ownerC !== ownerA) {
+        // Three owners: a quad per corner, from the corner along its two edges to their crossings and the centroid,
+        // which is written per owner like a crossing
+        const g = this.addCentroid(a, b, c)
+        this.addPiece(a, crossing(a, b), g)
+        this.addPiece(a, g, crossing(a, c))
+        this.addPiece(b, crossing(b, c), g + 1)
+        this.addPiece(b, g + 1, crossing(b, a))
+        this.addPiece(c, crossing(c, a), g + 2)
+        this.addPiece(c, g + 2, crossing(c, b))
+        continue
+      }
+      // Two owners: the corners turned, keeping their winding, so that the lone one is c
+      if (ownerB === ownerC) {
+        const lone = a
+        a = b
+        b = c
+        c = lone
+      } else if (ownerA === ownerC) {
+        const lone = b
+        b = a
+        a = c
+        c = lone
+      }
+      // The lone corner's piece, then the two of the quad that's left
+      this.addPiece(crossing(c, b), c, crossing(c, a))
+      this.addPiece(a, b, crossing(b, c))
+      this.addPiece(a, crossing(b, c), crossing(a, c))
+    }
+  }
+
+  // Adds a piece of a cut triangle, unless two of its corners sit at one point: the march's single-precision positions
+  // can put two vertices a hair apart, and the crossings on the edges to them then round to the same point
+  private addPiece(a: number, b: number, c: number) {
+    if (this.samePosition(a, b) || this.samePosition(b, c) || this.samePosition(c, a)) return
+    this.addTriangle(a, b, c)
+  }
+
+  private samePosition(v: number, w: number) {
+    const { positions } = this
+    const p = v * 3
+    const q = w * 3
+    return positions[p] === positions[q] && positions[p + 1] === positions[q + 1] && positions[p + 2] === positions[q + 2]
+  }
+
+  // Writes the point on the edge from vertex lo to vertex hi where their owners are equally near, as two vertices with
+  // lo's owner and then hi's, and returns the first
+  private addCrossing(lo: number, hi: number, centers: Float32Array, radii: Float32Array) {
+    const { positions, normals } = this
+    const ownerLo = this.owners[lo]
+    const ownerHi = this.owners[hi]
+    const t = crossingAlong(positions, lo, hi, ownerLo, ownerHi, centers, radii)
+    const p = lo * 3
+    const q = hi * 3
+    const x = positions[p] + t * (positions[q] - positions[p])
+    const y = positions[p + 1] + t * (positions[q + 1] - positions[p + 1])
+    const z = positions[p + 2] + t * (positions[q + 2] - positions[p + 2])
+    const normalX = normals[p] + t * (normals[q] - normals[p])
+    const normalY = normals[p + 1] + t * (normals[q + 1] - normals[p + 1])
+    const normalZ = normals[p + 2] + t * (normals[q + 2] - normals[p + 2])
+    const length = Math.hypot(normalX, normalY, normalZ) || 1
+    const first = this.addVertex(x, y, z, normalX / length, normalY / length, normalZ / length, ownerLo)
+    this.addVertex(x, y, z, normalX / length, normalY / length, normalZ / length, ownerHi)
+    return first
+  }
+
+  // Writes a triangle's centroid as three vertices, with the owners of a, b and c in turn, and returns the first
+  private addCentroid(a: number, b: number, c: number) {
+    const { positions, normals } = this
+    const ownerA = this.owners[a]
+    const ownerB = this.owners[b]
+    const ownerC = this.owners[c]
+    const p = a * 3
+    const q = b * 3
+    const r = c * 3
+    const x = (positions[p] + positions[q] + positions[r]) / 3
+    const y = (positions[p + 1] + positions[q + 1] + positions[r + 1]) / 3
+    const z = (positions[p + 2] + positions[q + 2] + positions[r + 2]) / 3
+    const normalX = normals[p] + normals[q] + normals[r]
+    const normalY = normals[p + 1] + normals[q + 1] + normals[r + 1]
+    const normalZ = normals[p + 2] + normals[q + 2] + normals[r + 2]
+    const length = Math.hypot(normalX, normalY, normalZ) || 1
+    const first = this.addVertex(x, y, z, normalX / length, normalY / length, normalZ / length, ownerA)
+    this.addVertex(x, y, z, normalX / length, normalY / length, normalZ / length, ownerB)
+    this.addVertex(x, y, z, normalX / length, normalY / length, normalZ / length, ownerC)
+    return first
+  }
+
   finish(spacing: number, gridPoints: number): SurfaceMesh {
     return {
       positions: this.positions.slice(0, this.vertexCount * 3),
@@ -304,6 +466,55 @@ function growIndices(array: Uint32Array<ArrayBuffer>) {
   const larger = new Uint32Array(array.length * 2)
   larger.set(array)
   return larger
+}
+
+// How far along the edge from vertex lo to vertex hi their two owners are equally near, each distance taken as a share
+// of the atom's radius: the root between 0 and 1 of the difference of the two squared shares, which is quadratic along
+// the edge. Where there are two, the one where the first owner gives way to the second; where there is none, the midpoint
+function crossingAlong(
+  positions: Float32Array,
+  lo: number,
+  hi: number,
+  ownerLo: number,
+  ownerHi: number,
+  centers: Float32Array,
+  radii: Float32Array,
+) {
+  const p = lo * 3
+  const q = hi * 3
+  const i = ownerLo * 3
+  const j = ownerHi * 3
+  const ex = positions[q] - positions[p]
+  const ey = positions[q + 1] - positions[p + 1]
+  const ez = positions[q + 2] - positions[p + 2]
+  const ux = positions[p] - centers[i]
+  const uy = positions[p + 1] - centers[i + 1]
+  const uz = positions[p + 2] - centers[i + 2]
+  const vx = positions[p] - centers[j]
+  const vy = positions[p + 1] - centers[j + 1]
+  const vz = positions[p + 2] - centers[j + 2]
+  const weightLo = 1 / (radii[ownerLo] * radii[ownerLo])
+  const weightHi = 1 / (radii[ownerHi] * radii[ownerHi])
+  const a = (ex * ex + ey * ey + ez * ez) * (weightLo - weightHi)
+  const b = 2 * ((ux * ex + uy * ey + uz * ez) * weightLo - (vx * ex + vy * ey + vz * ez) * weightHi)
+  const c = (ux * ux + uy * uy + uz * uz) * weightLo - (vx * vx + vy * vy + vz * vz) * weightHi
+  if (a === 0) {
+    // Equal radii, so the shares are equal on a plane, which the edge meets once
+    const t = -c / b
+    return t >= 0 && t <= 1 ? t : 0.5
+  }
+  const discriminant = b * b - 4 * a * c
+  if (discriminant < 0) return 0.5
+  // The two roots, written so that neither loses precision to cancellation
+  const half = -(b + Math.sign(b || 1) * Math.sqrt(discriminant)) / 2
+  const first = half / a
+  const second = half === 0 ? first : c / half
+  // The difference rises through the root where the first owner gives way to the second
+  const rising = a > 0 ? Math.max(first, second) : Math.min(first, second)
+  const other = rising === first ? second : first
+  if (rising >= 0 && rising <= 1) return rising
+  if (other >= 0 && other <= 1) return other
+  return 0.5
 }
 
 function emptyMesh(): SurfaceMesh {
