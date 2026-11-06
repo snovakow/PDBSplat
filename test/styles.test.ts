@@ -17,7 +17,7 @@ import {
 
 type Options = Pick<ViewOptions, 'style' | 'blend' | 'opacity' | 'focus' | 'fade' | 'models' | 'conformations' | 'ellipsoids'>
 
-const styleIds: Style[] = ['soft', 'spheres', 'surface']
+const styleIds: Style[] = ['soft', 'spheres', 'surface', 'field']
 const blends: Blend[] = ['normal', 'glow', 'weighted']
 const opacities = [0.5, depthWriteOpacity, 0.9, 1]
 const focuses: Pick<Options, 'focus' | 'fade'>[] = [
@@ -82,7 +82,7 @@ void test('the truth table of whole, solid, depth-written and opaque over every 
     // No combination is both solid and depth-written
     assert.equal(isSolid(options) && isDepthWritten(options), false, label)
   }
-  assert.equal(rows, 3 * 3 * 4 * 4 * 3 * 2 * 2)
+  assert.equal(rows, 4 * 3 * 4 * 4 * 3 * 2 * 2)
   // Whole spheres: normal spheres at every Opacity, with two of the four focuses, Models and Alternates first and Ellipsoids off
   assert.equal(whole, 4 * 2)
 })
@@ -121,12 +121,19 @@ void test('the rows the README names', () => {
   assert.equal(isOpaque({ ...surface, opacity: 0.9 }), false)
   // The surface takes no Blend, so glow or weighted leaves it opaque at full Opacity
   assert.equal(isOpaque({ ...surface, blend: 'weighted' }), true)
+  // The field is a cloud, never opaque, and never whole spheres
+  const field: Options = { ...spheres, style: 'field' }
+  assert.equal(isOpaque(field), false)
+  assert.equal(isSolid(field), false)
+  assert.equal(isDepthWritten(field), false)
+  assert.equal(isWholeSpheres(field), false)
 })
 
 void test('isWeighted is the weighted Blend in a splat style', () => {
   assert.equal(isWeighted({ style: 'soft', blend: 'weighted' }), true)
   assert.equal(isWeighted({ style: 'spheres', blend: 'weighted' }), true)
   assert.equal(isWeighted({ style: 'surface', blend: 'weighted' }), false)
+  assert.equal(isWeighted({ style: 'field', blend: 'weighted' }), false)
   assert.equal(isWeighted({ style: 'soft', blend: 'normal' }), false)
   assert.equal(isWeighted({ style: 'spheres', blend: 'glow' }), false)
 })
@@ -134,12 +141,13 @@ void test('isWeighted is the weighted Blend in a splat style', () => {
 void test('styleOf finds each style, and falls back to the first for an unknown id', () => {
   assert.deepEqual(
     styles.map((entry) => entry.id),
-    ['soft', 'spheres', 'surface'],
+    ['soft', 'spheres', 'surface', 'field'],
   )
   for (const entry of styles) assert.equal(styleOf(entry.id), entry)
   assert.equal(styleOf('soft').kind, 'splats')
   assert.equal(styleOf('spheres').kind, 'splats')
   assert.equal(styleOf('surface').kind, 'surface')
+  assert.equal(styleOf('field').kind, 'volume')
   // An id the type doesn't allow, as a stale setting might hold, falls back to the first style
   const stale: { style: Style } = { style: 'soft' }
   Object.assign(stale, { style: 'unknown' })

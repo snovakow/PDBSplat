@@ -56,6 +56,38 @@ interface Atoms {
   hi: number[]
 }
 
+// The density and the owner at every point of the grid, kept whole, in the march's order: x varies fastest, then y,
+// then z. Its arrays have their own buffers, so a worker can transfer them
+export interface Field {
+  density: Float32Array<ArrayBuffer>
+  // Per point, the atom (by its index in the input) adding the most density there, or noOwner where none reaches it
+  owners: Uint32Array<ArrayBuffer>
+  // The grid's lowest corner in ångströms, its points per axis and its spacing
+  origin: [number, number, number]
+  size: [number, number, number]
+  spacing: number
+}
+
+// A field packed into the bytes the field's textures take: the density as one byte per point, saturated at the
+// isolevel, since beyond it a point is inside the surface and the cloud is at its densest there; and the owner as the
+// three bytes of its index, the red the low, the green the middle and the blue the high, with a full fourth, as the
+// atom table's shaders read an index. A point no atom reaches has every byte full
+export interface PackedField {
+  density: Uint8Array<ArrayBuffer>
+  owners: Uint8Array<ArrayBuffer>
+  origin: [number, number, number]
+  size: [number, number, number]
+  spacing: number
+}
+
+// The most points a field may have: twenty megabytes once packed, and sampled in under a second. A spacing that would
+// give more is coarsened to fit
+export const maxGridPoints = 4_000_000
+
+// A byte's range, which an index is split into bytes by
+const byteRange = 256
+const fullByte = byteRange - 1
+
 // Marching cubes over the density, with the tables and conventions of three's MarchingCubes:
 // x varies fastest, then y, then z; corners in Paul Bourke's order; a corner's bit is set when it's below the isolevel.
 // The triangles are then cut where their owners change, so that each has one owner. With sharpen false, the march's
@@ -70,6 +102,51 @@ export function meshSurface({ centers, radii, spacing }: SurfaceInput, sharpen =
   const { gridPoints } = march(atoms, h, builder)
   if (sharpen) builder.sharpen(centers, radii)
   return builder.finish(h, gridPoints)
+}
+
+// Samples the density and the owner at every point of the grid the spacing lays over the atoms, the march's own, and
+// keeps the whole grid. Where that would have more points than maxGridPoints, the spacing is coarsened by the cube
+// root of the excess, and again should the grid's border and rounding leave it over
+export function sampleField({ centers, radii, spacing }: SurfaceInput): Field {
+  if (radii.length === 0) return emptyField()
+  const atoms = prepare(centers, radii)
+  let h = spacing
+  let grid = gridOver(atoms, h)
+  for (let points = pointCount(grid); points > maxGridPoints; points = pointCount(grid)) {
+    h *= Math.cbrt(points / maxGridPoints)
+    grid = gridOver(atoms, h)
+  }
+  const { lo, nx, ny, nz } = grid
+  const nxy = nx * ny
+  const density = new Float32Array(nxy * nz)
+  const owners = new Uint32Array(nxy * nz)
+  const nearest = new Float32Array(nxy)
+  const samplePlane = planeSampler(atoms, grid, h)
+  for (let z = 0; z < nz; z++) {
+    samplePlane(z, density.subarray(z * nxy, (z + 1) * nxy), owners.subarray(z * nxy, (z + 1) * nxy), nearest)
+  }
+  return { density, owners, origin: [lo[0], lo[1], lo[2]], size: [nx, ny, nz], spacing: h }
+}
+
+// Packs a field into the bytes its textures take
+export function packField({ density, owners, origin, size, spacing }: Field): PackedField {
+  const points = density.length
+  const densityBytes = new Uint8Array(points)
+  const ownerBytes = new Uint8Array(points * 4)
+  for (let i = 0; i < points; i++) {
+    densityBytes[i] = Math.round((Math.min(density[i], isolevel) / isolevel) * fullByte)
+    const owner = owners[i]
+    const o = i * 4
+    if (owner === noOwner) {
+      ownerBytes.fill(fullByte, o, o + 4)
+      continue
+    }
+    ownerBytes[o] = owner % byteRange
+    ownerBytes[o + 1] = Math.floor(owner / byteRange) % byteRange
+    ownerBytes[o + 2] = Math.floor(owner / (byteRange * byteRange))
+    ownerBytes[o + 3] = fullByte
+  }
+  return { density: densityBytes, owners: ownerBytes, origin, size, spacing }
 }
 
 // The finest spacing, no finer than the one asked for, at which the triangles counted at the probe's spacing, grown as
@@ -96,27 +173,35 @@ function prepare(centers: Float32Array, radii: Float32Array): Atoms {
   return { centers, radii, byZ, reach2, maxReach, lo, hi }
 }
 
-// Marches the grid one layer of cells at a time, computing the density a plane at a time, so memory holds only the
-// four planes around the current layer. With no builder, it only counts the triangles, and the pieces the cut would
-// add to them
-function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
-  const { centers, radii, byZ, reach2, maxReach } = atoms
+// The grid a spacing lays over the atoms: its lowest corner and its points per axis
+interface Grid {
+  lo: number[]
+  nx: number
+  ny: number
+  nz: number
+}
+
+function gridOver(atoms: Atoms, h: number): Grid {
   // A spacing more on every side keeps the grid's border outside the surface, so the mesh closes
   const lo = atoms.lo.map((value) => value - h)
   const [nx, ny, nz] = [0, 1, 2].map((axis) => Math.ceil((atoms.hi[axis] - lo[axis]) / h) + 2)
-  const nxy = nx * ny
+  return { lo, nx, ny, nz }
+}
 
-  // Planes z - 1 to z + 2, in slots by z modulo 4: the density, and per point the atom adding the most density there
-  // (the one nearest relative to its radius) with its d²/R²
-  const fields = [0, 1, 2, 3].map(() => new Float32Array(nxy))
-  const owners = [0, 1, 2, 3].map(() => new Uint32Array(nxy))
-  const nearests = [0, 1, 2, 3].map(() => new Float32Array(nxy))
+function pointCount({ nx, ny, nz }: Grid) {
+  return nx * ny * nz
+}
+
+// Computes the density on the grid's planes, each into the arrays given, in order of z: per point the total density,
+// the atom adding the most density there (the one nearest relative to its radius) and that atom's d²/R². A plane
+// visits only the atoms within reach of it, through the atoms sorted by z
+function planeSampler(atoms: Atoms, { lo, nx, ny }: Grid, h: number) {
+  const { centers, radii, byZ, reach2, maxReach } = atoms
   let windowStart = 0
-  const computePlane = (z: number) => {
-    const slot = z & 3
-    const field = fields[slot].fill(0)
-    const owner = owners[slot].fill(noOwner)
-    const nearest = nearests[slot].fill(Infinity)
+  return (z: number, field: Float32Array, owner: Uint32Array, nearest: Float32Array) => {
+    field.fill(0)
+    owner.fill(noOwner)
+    nearest.fill(Infinity)
     const pz = lo[2] + z * h
     while (windowStart < byZ.length && centers[byZ[windowStart] * 3 + 2] < pz - maxReach) windowStart++
     for (let s = windowStart; s < byZ.length; s++) {
@@ -150,6 +235,26 @@ function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
         }
       }
     }
+  }
+}
+
+// Marches the grid one layer of cells at a time, computing the density a plane at a time, so memory holds only the
+// four planes around the current layer. With no builder, it only counts the triangles, and the pieces the cut would
+// add to them
+function march(atoms: Atoms, h: number, builder: MeshBuilder | null) {
+  const grid = gridOver(atoms, h)
+  const { lo, nx, ny, nz } = grid
+  const nxy = nx * ny
+
+  // Planes z - 1 to z + 2, in slots by z modulo 4: the density, and per point the atom adding the most density there
+  // with its d²/R²
+  const fields = [0, 1, 2, 3].map(() => new Float32Array(nxy))
+  const owners = [0, 1, 2, 3].map(() => new Uint32Array(nxy))
+  const nearests = [0, 1, 2, 3].map(() => new Float32Array(nxy))
+  const samplePlane = planeSampler(atoms, grid, h)
+  const computePlane = (z: number) => {
+    const slot = z & 3
+    samplePlane(z, fields[slot], owners[slot], nearests[slot])
   }
 
   // The vertex where the surface crosses the edge from grid point (x, y, z) to the next point along the axis
@@ -526,4 +631,8 @@ function emptyMesh(): SurfaceMesh {
     spacing: 0,
     gridPoints: 0,
   }
+}
+
+function emptyField(): Field {
+  return { density: new Float32Array(0), owners: new Uint32Array(0), origin: [0, 0, 0], size: [0, 0, 0], spacing: 0 }
 }

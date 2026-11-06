@@ -1,6 +1,7 @@
 import { DataTexture, RGBAFormat, UnsignedByteType } from 'three'
 import { writeColorBytes } from 'three/addons/utils/GaussianSplatUtils.js'
 import { dot, int, ivec2, round, textureLoad, uniform, varyingProperty, vec3 } from 'three/tsl'
+import type { Node, TextureNode } from 'three/webgpu'
 import type { ColorBy, Conformations, Focus } from '../options.ts'
 import type { Atom } from '../pdb/mmcif.ts'
 import { atomColors } from './atomColors.ts'
@@ -22,6 +23,8 @@ export interface AtomTable {
   texture: DataTexture
   // The texture's bytes, which clamp and round what's written as the splats' own colour bytes do
   bytes: Uint8ClampedArray
+  // How many atoms it holds, in its first texels
+  count: number
 }
 
 // What the table is painted from: the shown atoms and the entry they're from, Colour by and Burial, Focus with the
@@ -52,7 +55,7 @@ export function tableSize(count: number) {
 export function createAtomTable(count: number): AtomTable {
   const { width, height } = tableSize(count)
   const bytes = new Uint8ClampedArray(width * height * bytesPerAtom)
-  return { texture: new DataTexture(bytes, width, height, RGBAFormat, UnsignedByteType), bytes }
+  return { texture: new DataTexture(bytes, width, height, RGBAFormat, UnsignedByteType), bytes, count }
 }
 
 // Writes an atom's index into its splat's colour bytes, with a full alpha, so that three's raycast never skips it
@@ -125,16 +128,28 @@ export function isPickable({ bytes }: AtomTable, index: number) {
   return bytes[index * bytesPerAtom + 3] / fullByte >= minPickOpacity
 }
 
-// The splat's colour varying, three's own, which carries the index bytes: three clamps it to 0–1 and the quad's four
-// corners carry one value, so each channel times 255 rounds back to its byte, and the three bytes make the index
-const splatColor = varyingProperty('vec4', 'vSplatColor')
-const atomIndex = int(dot(round(splatColor.rgb.mul(fullByte)), vec3(1, byteRange, byteRange * byteRange)))
+// The index three bytes carry, as a shader reads them from a colour of 0 to 1 per channel: each channel times 255
+// rounds back to its byte, and the three bytes make the index
+export function atomIndexOf(rgb: Node<'vec3'>) {
+  return int(dot(round(rgb.mul(fullByte)), vec3(1, byteRange, byteRange * byteRange)))
+}
 
-// The read of the splat's atom's texel, by index: its row is the index over the table's width, and its column the rest.
-// The width is a uniform set once, so that every table reads through the same shader
+// The splat's colour varying, three's own, which carries the index bytes: three clamps it to 0–1 and the quad's four
+// corners carry one value, so each channel rounds back to its byte
+const splatColor = varyingProperty('vec4', 'vSplatColor')
+const atomIndex = atomIndexOf(splatColor.rgb)
+
+// The read of an atom's texel from a table, by the atom's index: its row is the index over the table's width, and its
+// column the rest. The read follows the table node's texture and the width's value, so that another table can be
+// swapped in by setting both
+export function atomTexelAt(table: TextureNode, width: Node<'int'>, index: Node<'int'>) {
+  const i = index.toVar()
+  const row = i.div(width).toVar()
+  return table.load(ivec2(i.sub(row.mul(width)), row))
+}
+
+// The read of the splat's atom's texel, by the index its colour bytes carry. The width is a uniform set once, so that
+// every table reads through the same shader
 export function atomTexel({ texture: table }: AtomTable) {
-  const width = uniform(table.image.width, 'int')
-  const index = atomIndex.toVar()
-  const row = index.div(width).toVar()
-  return textureLoad(table, ivec2(index.sub(row.mul(width)), row))
+  return atomTexelAt(textureLoad(table), uniform(table.image.width, 'int'), atomIndex)
 }

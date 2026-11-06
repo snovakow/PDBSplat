@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { meshSurface, type SurfaceMesh } from '../src/surface/gaussianSurface.ts'
+import {
+  maxGridPoints,
+  meshSurface,
+  packField,
+  sampleField,
+  type Field,
+  type SurfaceMesh,
+} from '../src/surface/gaussianSurface.ts'
+import { readAtomIndex } from '../src/viewer/atomTable.ts'
 
 // The mesher's surface, checked on a lone sphere, a pair of unequal spheres, a pair of equal ones and a ring of heavy
-// atoms with hydrogens, all built here
+// atoms with hydrogens, all built here; then the field sampled on the same grid, and its packing into bytes
+
+// The density's parameters, as the mesher has them: the surface is where the density is 1, an atom's density falls
+// off as the exponential of minus the steepness times its squared distance over its squared radius, less 1, and it's
+// left out below a hundredth of the isolevel
+const isolevel = 1
+const steepness = 1.2
+const cutoffRatio = 100
 
 // Van der Waals radii of the atoms the meshes are built from
 const carbon = 1.7
@@ -249,4 +264,166 @@ void test('empty input gives the empty mesh', () => {
   assert.equal(mesh.owners.length, 0)
   assert.equal(mesh.spacing, 0)
   assert.equal(mesh.gridPoints, 0)
+})
+
+// The grid point's place in scene units, and the field's value and owner there, for a point by its indices
+function gridPoint(field: Field, x: number, y: number, z: number) {
+  const [nx, ny] = field.size
+  const i = x + nx * (y + ny * z)
+  return {
+    position: [field.origin[0] + x * field.spacing, field.origin[1] + y * field.spacing, field.origin[2] + z * field.spacing],
+    density: field.density[i],
+    owner: field.owners[i],
+  }
+}
+
+// Every grid point, with its place, density and owner
+function* gridPoints(field: Field) {
+  const [nx, ny, nz] = field.size
+  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) yield gridPoint(field, x, y, z)
+}
+
+// The density one atom of radius R adds at a distance d, as the mesher defines it
+const atomDensity = (d: number, R: number) => Math.exp(-steepness * ((d * d) / (R * R) - 1))
+
+// The owners' marker for a point no atom reaches: every bit set
+const noOwner = 0xffffffff
+
+void test('a lone carbon samples to its density, falling to nothing past its cutoff, every reached point its own', () => {
+  const field = sampleField(lone)
+  assert.equal(field.spacing, lone.spacing)
+  const [nx, ny, nz] = field.size
+  assert.equal(field.density.length, nx * ny * nz)
+  assert.equal(field.owners.length, nx * ny * nz)
+  // The grid's offset: no point is farther from where it's measured than half a diagonal of a cell
+  const offset = (Math.sqrt(3) / 2) * field.spacing
+  // The reach: where the density falls to a hundredth of the isolevel
+  const reach = carbon * Math.sqrt(1 + Math.log(cutoffRatio) / steepness)
+  let nearestCentre = { distance: Infinity, density: 0 }
+  let reached = 0
+  let onSphere = 0
+  for (const point of gridPoints(field)) {
+    const d = Math.hypot(...point.position)
+    if (d < nearestCentre.distance) nearestCentre = { distance: d, density: point.density }
+    if (d >= reach) {
+      assert.equal(point.density, 0, `the density at ${d} Å, past the cutoff`)
+      assert.equal(point.owner, noOwner, `the owner at ${d} Å, past the cutoff`)
+      continue
+    }
+    reached++
+    assert.equal(point.owner, 0, `the owner at ${d} Å, within reach`)
+    // The density is the atom's, at the point's own distance
+    assert.ok(Math.abs(point.density - atomDensity(d, carbon)) <= 1e-6 * atomDensity(d, carbon), `the density at ${d} Å`)
+    // The points nearest the sphere hold a density within what the offset explains of the isolevel
+    if (Math.abs(d - carbon) <= offset) {
+      onSphere++
+      const low = atomDensity(carbon + offset, carbon)
+      const high = atomDensity(carbon - offset, carbon)
+      assert.ok(point.density >= low && point.density <= high, `the density ${point.density} on the sphere`)
+    }
+  }
+  assert.ok(reached > 1000)
+  assert.ok(onSphere > 100)
+  // The point nearest the centre holds the peak, within what its offset explains
+  assert.ok(nearestCentre.distance <= offset)
+  assert.ok(nearestCentre.density <= Math.exp(steepness) && nearestCentre.density >= atomDensity(offset, carbon))
+  // The grid holds the whole atom, with a border of a spacing beyond its reach
+  for (let axis = 0; axis < 3; axis++) {
+    assert.ok(field.origin[axis] <= -reach - field.spacing)
+    assert.ok(field.origin[axis] + (field.size[axis] - 1) * field.spacing >= reach + field.spacing)
+  }
+})
+
+void test('between two atoms each point is owned by the one nearer relative to its radius', () => {
+  const field = sampleField(pair)
+  let shared = 0
+  for (const point of gridPoints(field)) {
+    if (point.owner === noOwner) {
+      assert.equal(point.density, 0)
+      continue
+    }
+    const a = share(pair, 0, point.position)
+    const b = share(pair, 1, point.position)
+    // A point within reach of both takes the nearer by share; one within reach of one alone takes that one
+    const reachA = Math.sqrt(1 + Math.log(cutoffRatio) / steepness)
+    const inA = a < reachA
+    const inB = b < reachA
+    if (inA && inB) shared++
+    const expected = inA && inB ? (a <= b ? 0 : 1) : inA ? 0 : 1
+    assert.equal(point.owner, expected, `the owner at ${point.position.join(', ')} with shares ${a} and ${b}`)
+  }
+  assert.ok(shared > 1000)
+})
+
+void test('a grid that would exceed the cap is coarsened by the cube root of the excess', () => {
+  // A dozen carbons spread over a line, at a spacing that would take almost twice the cap
+  const count = 12
+  const centers = new Float32Array(count * 3)
+  for (let i = 0; i < count; i++) centers[i * 3] = i * 10
+  const radii = new Float32Array(count).fill(carbon)
+  const fine = { centers, radii, spacing: 0.1 }
+  const field = sampleField(fine)
+  const points = field.size[0] * field.size[1] * field.size[2]
+  assert.ok(points <= maxGridPoints, `${points} points`)
+  assert.ok(field.spacing > fine.spacing)
+  // The grid the asked-for spacing would have laid: a spacing of border beyond each atom's reach on every side
+  const reach = carbon * Math.sqrt(1 + Math.log(cutoffRatio) / steepness)
+  const asked = [110, 0, 0].map((extent) => Math.ceil((extent + 2 * reach + 2 * fine.spacing) / fine.spacing) + 1)
+  const askedPoints = asked[0] * asked[1] * asked[2]
+  assert.ok(askedPoints > maxGridPoints)
+  const coarsened = fine.spacing * Math.cbrt(askedPoints / maxGridPoints)
+  // The spacing is the asked-for one coarsened by the cube root, and again while the grid's border and rounding leave
+  // it over: here twice more, by 1.4% in all
+  assert.ok(field.spacing >= coarsened * (1 - 1e-9), `${field.spacing} against ${coarsened}`)
+  assert.ok(field.spacing <= coarsened * 1.02, `${field.spacing} against ${coarsened}`)
+  // At most the cap, and near it
+  assert.ok(points > maxGridPoints * 0.9, `${points} points`)
+})
+
+void test('the packed field holds the density as a byte saturated at the isolevel, and the owner as index bytes', () => {
+  const field: Field = {
+    density: Float32Array.of(0, 0.5, 1, 3, 0.25),
+    owners: Uint32Array.of(0, 1, 255, 16777215, noOwner),
+    origin: [1, 2, 3],
+    size: [5, 1, 1],
+    spacing: 0.5,
+  }
+  const packed = packField(field)
+  assert.deepEqual([...packed.density], [0, 128, 255, 255, 64])
+  assert.equal(packed.owners.length, 20)
+  assert.deepEqual(packed.origin, field.origin)
+  assert.deepEqual(packed.size, field.size)
+  assert.equal(packed.spacing, field.spacing)
+  const bytes = new Uint8ClampedArray(packed.owners)
+  for (const i of [0, 1, 2, 3]) {
+    assert.equal(readAtomIndex(bytes, i * 4), field.owners[i])
+    assert.equal(packed.owners[i * 4 + 3], 255)
+  }
+  // The red is the low byte, the green the middle and the blue the high
+  assert.deepEqual([...packed.owners.subarray(8, 12)], [255, 0, 0, 255])
+  assert.deepEqual([...packed.owners.subarray(12, 16)], [255, 255, 255, 255])
+  // A point no atom reaches is every byte full, told apart from the last index by its density alone
+  assert.deepEqual([...packed.owners.subarray(16, 20)], [255, 255, 255, 255])
+  assert.equal(isolevel, 1)
+})
+
+void test('a sampled field packs to bytes of its own density and owners', () => {
+  const field = sampleField(pair)
+  const packed = packField(field)
+  assert.equal(packed.density.length, field.density.length)
+  assert.equal(packed.owners.length, field.owners.length * 4)
+  const bytes = new Uint8ClampedArray(packed.owners)
+  for (let i = 0; i < field.density.length; i++) {
+    assert.equal(packed.density[i], Math.round(Math.min(field.density[i], isolevel) * 255))
+    if (field.owners[i] === noOwner) assert.deepEqual([...packed.owners.subarray(i * 4, i * 4 + 4)], [255, 255, 255, 255])
+    else assert.equal(readAtomIndex(bytes, i * 4), field.owners[i])
+  }
+})
+
+void test('empty input gives the empty field', () => {
+  const field = sampleField({ centers: new Float32Array(0), radii: new Float32Array(0), spacing: 0.5 })
+  assert.equal(field.density.length, 0)
+  assert.equal(field.owners.length, 0)
+  assert.deepEqual(field.size, [0, 0, 0])
+  assert.equal(field.spacing, 0)
 })

@@ -79,10 +79,10 @@ const styleChoice = (entry: Omit<StyleChoice, 'kind'>): StyleChoice => ({ kind: 
 
 const every: ShownFor = 'every'
 const splats: ShownFor = { kind: 'splats' }
-const surface: ShownFor = { kind: 'surface' }
 const soft: ShownFor = { styles: ['soft'] }
 const spheres: ShownFor = { styles: ['spheres'] }
 const spheresAndSurface: ShownFor = { styles: ['spheres', 'surface'] }
+const surfaceAndField: ShownFor = { styles: ['surface', 'field'] }
 
 // Bloom's spread and threshold until the panel moves them, chosen by eye on the antibody example in glow: a halo
 // that hazes the space around the structure, from its dense core and bright atoms but not its faint edges
@@ -94,8 +94,16 @@ const aoRadiusDefault = 3
 
 export const viewOptions = {
   style: styleChoice({ folder: 'Look', label: 'Style', default: 'soft', shownFor: every }),
-  // The surface style's grid points per ångström: higher meshes it more finely, and more slowly
-  resolution: slider({ folder: 'Look', label: 'Resolution', default: 2, min: 0.5, max: 4, step: 0.1, shownFor: surface }),
+  // The surface and field styles' grid points per ångström: higher meshes or samples more finely, and more slowly
+  resolution: slider({
+    folder: 'Look',
+    label: 'Resolution',
+    default: 2,
+    min: 0.5,
+    max: 4,
+    step: 0.1,
+    shownFor: surfaceAndField,
+  }),
   // Times each atom's van der Waals radius
   scale: slider({ folder: 'Look', label: 'Size', default: 1, min: 0.25, max: 2, step: 0.05, shownFor: every }),
   opacity: slider({ folder: 'Look', label: 'Opacity', default: 0.9, min: 0, max: 1, step: 0.05, shownFor: every }),

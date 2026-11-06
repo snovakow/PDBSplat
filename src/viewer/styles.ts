@@ -3,16 +3,18 @@ import { softColor, sphereColor, type SplatShading } from './shading.ts'
 
 // The styles' ids, each of which has an entry in styles below. The type is written out rather than read from the
 // entries, so that the options' type, which the shading reads its defaults through, doesn't lean on the shading
-export type Style = 'soft' | 'spheres' | 'surface'
+export type Style = 'soft' | 'spheres' | 'surface' | 'field'
 
 // The ways the panel's Style chooser can draw the atoms, in its order; an entry added here, with its id in Style,
 // appears there.
 // A splats style draws GaussianSplats, shaded by its colorNode in place of three's own, built for each splat on its
 // read of the atom table.
-// The surface style meshes the atoms by marching cubes instead
+// The surface style meshes the atoms by marching cubes instead, and the volume style draws the density the mesher
+// marches as a cloud, by a ray march through the grid it's sampled on
 type StyleEntry =
   | { id: Style; label: string; kind: 'splats'; colorNode: SplatShading }
   | { id: Style; label: string; kind: 'surface' }
+  | { id: Style; label: string; kind: 'volume' }
 
 export type StyleKind = StyleEntry['kind']
 
@@ -20,6 +22,7 @@ export const styles = [
   { id: 'soft', label: 'soft', kind: 'splats', colorNode: softColor },
   { id: 'spheres', label: 'spheres', kind: 'splats', colorNode: sphereColor },
   { id: 'surface', label: 'surface', kind: 'surface' },
+  { id: 'field', label: 'field', kind: 'volume' },
 ] as const satisfies readonly StyleEntry[]
 
 export function styleOf(style: Style): StyleEntry {

@@ -7,6 +7,7 @@ import { Effects } from './Effects.tsx'
 import { Framing } from './Framing.tsx'
 import { ModelPlayer } from './ModelPlayer.tsx'
 import { Picking } from './Picking.tsx'
+import { ProteinField } from './ProteinField.tsx'
 import { ProteinSplats } from './ProteinSplats.tsx'
 import { ProteinSurface } from './ProteinSurface.tsx'
 import { ShadingUniforms } from './ShadingUniforms.tsx'
@@ -34,8 +35,10 @@ export function Viewer() {
       <ShadingUniforms bounds={bounds} />
       {style.kind === 'splats' ? (
         <ProteinSplats bounds={bounds} colorNode={style.colorNode} />
-      ) : (
+      ) : style.kind === 'surface' ? (
         <ProteinSurface bounds={bounds} />
+      ) : (
+        <ProteinField bounds={bounds} />
       )}
       {effects && <Effects />}
       {playing && <ModelPlayer />}
