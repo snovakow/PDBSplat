@@ -17,7 +17,7 @@ import { beyondNear } from './nearPlane.ts'
 import { writeEllipsoid } from './ellipsoids.ts'
 import { asWebGPU } from './renderer.ts'
 import { solidSphereColor, sphereDepth } from './shading.ts'
-import { isSolid } from './styles.ts'
+import { isDepthWritten, isSolid } from './styles.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
@@ -56,6 +56,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const burial = useStore((s) => s.options.burial)
   const blend = useStore((s) => s.options.blend)
   const solid = useStore((s) => isSolid(s.options))
+  const depthWritten = useStore((s) => isDepthWritten(s.options))
 
   useEffect(() => {
     const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
@@ -104,6 +105,12 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       splat.material.transparent = false
       splat.material.depthWrite = true
       splat.material.alphaToCoverage = true
+    } else if (depthWritten) {
+      // A translucent sphere is sorted and blended as the soft splats are, and writes the depth of its surface too, so
+      // that where two spheres meet the nearer cuts into the farther, and a pair drawn in a stale order between the
+      // splats' re-sorts loses only the farther one's share under the nearer, until the next re-sort brings it back
+      splat.material.depthNode = sphereDepth
+      splat.material.depthWrite = true
     }
     const { scene, gl, camera } = get()
     scene.add(splat)
@@ -160,6 +167,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     burial,
     blend,
     solid,
+    depthWritten,
     colorNode,
   ])
 
