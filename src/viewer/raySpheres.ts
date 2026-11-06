@@ -1,8 +1,9 @@
 import { Vector3, type Camera, type Ray } from 'three'
 import { beyondNear } from './nearPlane.ts'
 
-// The nearest of a set of spheres along a ray, which the surface style picks its atoms by: meshes are far too many
-// triangles to test as the pointer moves, and each atom's sphere stands for its part of the surface
+// The nearest of a set of spheres along a ray, which the surface style picks its atoms by, and the splat styles while
+// Detail draws residues or chains alone: meshes are far too many triangles to test as the pointer moves, and a blob
+// stands for a whole residue or chain, so each atom's sphere stands for its part of what's drawn
 
 export interface SphereHit {
   // The sphere's place in the list, or -1 when the ray meets none
@@ -14,8 +15,16 @@ export interface SphereHit {
 const point = new Vector3()
 
 // Writes into hit the sphere the ray enters first, among those it enters beyond the camera's near plane, which may cut
-// a sphere's front away. Centres are x, y, z triples, and the ray's direction has unit length
-export function nearestSphere(ray: Ray, centers: Float32Array, radii: Float32Array, camera: Camera, hit: SphereHit) {
+// a sphere's front away, and, where a test is given, among those it accepts by their place in the list: the ray passes
+// through the rest. Centres are x, y, z triples, and the ray's direction has unit length
+export function nearestSphere(
+  ray: Ray,
+  centers: Float32Array,
+  radii: Float32Array,
+  camera: Camera,
+  hit: SphereHit,
+  accepts?: (index: number) => boolean,
+) {
   const { origin, direction } = ray
   hit.index = -1
   hit.distance = Infinity
@@ -32,6 +41,7 @@ export function nearestSphere(ray: Ray, centers: Float32Array, radii: Float32Arr
     const root = Math.sqrt(discriminant)
     const t = -b - root >= 0 ? -b - root : -b + root
     if (t < 0 || t >= hit.distance) continue
+    if (accepts?.(i) === false) continue
     if (!beyondNear(ray.at(t, point), camera)) continue
     hit.index = i
     hit.distance = t

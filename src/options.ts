@@ -16,6 +16,10 @@ export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
 // summed by how near and how opaque each is, so that the order they're drawn in never matters
 export type Blend = 'normal' | 'glow' | 'weighted'
 
+// Which level of detail the splat styles draw: the atoms, one Gaussian per residue or per chain, or whichever is still
+// a few pixels across at the view's distance
+export type Detail = 'auto' | 'atoms' | 'residues' | 'chains'
+
 // Which of an entry's models are shown: the first, every one at once, or each in turn
 export type Models = 'first' | 'all' | 'play'
 
@@ -109,6 +113,15 @@ export const viewOptions = {
     label: 'Blend',
     default: 'normal',
     choices: { normal: 'normal', glow: 'glow', weighted: 'weighted' },
+    shownFor: splats,
+  }),
+  // The atoms merged into one blob per residue or per chain, or the atoms themselves, or whichever is still a few
+  // pixels across as the view zooms, which the surface leaves out
+  detail: choice<Detail>({
+    folder: 'Look',
+    label: 'Detail',
+    default: 'auto',
+    choices: { auto: 'auto', atoms: 'atoms', residues: 'residues', chains: 'chains' },
     shownFor: splats,
   }),
   colorBy: choice<ColorBy>({
@@ -239,6 +252,7 @@ export const defaultOptions: ViewOptions = {
   shininess: viewOptions.shininess.default,
   outline: viewOptions.outline.default,
   blend: viewOptions.blend.default,
+  detail: viewOptions.detail.default,
   colorBy: viewOptions.colorBy.default,
   burial: viewOptions.burial.default,
   hydrogens: viewOptions.hydrogens.default,

@@ -5,6 +5,7 @@ import type { ColorBy, Conformations, Focus } from '../options.ts'
 import type { Atom } from '../pdb/mmcif.ts'
 import { atomColors } from './atomColors.ts'
 import { focusTest } from './focus.ts'
+import type { Grouping } from './levels.ts'
 
 // The atom table: each shown atom's colour and alpha, four bytes per atom in splat-index order, in a texture the
 // splats' shaders read by the atom's index, which the splat's own colour bytes carry. A splat's bytes are copied into
@@ -87,6 +88,31 @@ export function paintAtomTable({ texture: table, bytes }: AtomTable, paint: Tabl
     const b = rgb[i * 3 + 2] * fullByte
     writeColorBytes(bytes, i * bytesPerAtom, r, g, b, alpha)
   })
+  table.needsUpdate = true
+}
+
+// Paints a merged level's table from the atom table its members are painted in: each group's texel is the weighted
+// mean of its members' colours and alphas, by the weights the Gaussians were merged with, so that a blob takes the
+// colour of the atoms it stands for and fades as they do
+export function paintMergedTable(
+  { texture: table, bytes }: AtomTable,
+  source: AtomTable,
+  { groups, count }: Grouping,
+  weights: ArrayLike<number>,
+) {
+  const sums = new Float64Array(count * bytesPerAtom)
+  const totals = new Float64Array(count)
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i]
+    const weight = weights[i]
+    totals[group] += weight
+    for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source.bytes[i * bytesPerAtom + k]
+  }
+  for (let group = 0; group < count; group++) {
+    const offset = group * bytesPerAtom
+    const total = totals[group]
+    writeColorBytes(bytes, offset, sums[offset] / total, sums[offset + 1] / total, sums[offset + 2] / total, sums[offset + 3] / total)
+  }
   table.needsUpdate = true
 }
 

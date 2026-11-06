@@ -9,6 +9,7 @@ import {
   isPickable,
   minPickOpacity,
   paintAtomTable,
+  paintMergedTable,
   readAtomIndex,
   tableSize,
   writeAtomIndex,
@@ -198,4 +199,27 @@ void test('the read of a texel loads the table by texel coordinates rather than 
   const read = atomTexel(table)
   assert.equal(read.value, table.texture)
   assert.equal(read.sampler, false)
+})
+
+void test("a merged level's texel is the weighted mean of its members' colours and alphas", () => {
+  const entry = entryOf()
+  const { table, shown } = painted(entry, { focus: 'ligands', fade: 0.15 })
+  // The first residue's two atoms in one group, the second residue's two in another, and the ligand alone
+  const grouping = { groups: new Uint32Array([0, 0, 1, 1, 2]), count: 3 }
+  const merged = createAtomTable(grouping.count)
+  paintMergedTable(merged, table, grouping, [1, 3, 2, 2, 5])
+  const mean = (members: number[], weights: number[], k: number) =>
+    members.reduce((sum, i, m) => sum + weights[m] * table.bytes[i * 4 + k], 0) / weights.reduce((a, b) => a + b, 0)
+  for (let k = 0; k < 4; k++) {
+    assert.equal(merged.bytes[k], Math.round(mean([0, 1], [1, 3], k)))
+    assert.equal(merged.bytes[4 + k], Math.round(mean([2, 3], [2, 2], k)))
+    assert.equal(merged.bytes[8 + k], table.bytes[4 * 4 + k])
+  }
+  // A carbon and a nitrogen at weights 2 and 2 give the mean of the two colours, and the out-of-focus pair keeps Fade
+  assert.equal(shown[2].element, 'N')
+  assert.equal(merged.bytes[3], 38)
+  assert.equal(merged.bytes[7], 255)
+  assert.equal(merged.texture.version, 1)
+  paintMergedTable(merged, table, grouping, [1, 1, 1, 1, 1])
+  assert.equal(merged.texture.version, 2)
 })
