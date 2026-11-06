@@ -16,6 +16,8 @@ import { focusTest, pickedKey } from './focus.ts'
 import { beyondNear } from './nearPlane.ts'
 import { writeEllipsoid } from './ellipsoids.ts'
 import { asWebGPU } from './renderer.ts'
+import { solidSphereColor, sphereDepth } from './shading.ts'
+import { isSolid } from './styles.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
@@ -53,6 +55,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const picked = useStore((s) => pickedKey(s.options.focus, s.picked))
   const burial = useStore((s) => s.options.burial)
   const blend = useStore((s) => s.options.blend)
+  const solid = useStore((s) => isSolid(s.options))
 
   useEffect(() => {
     const shown = atoms.filter((atom) => isShown(atom, { hydrogens, waters, conformations }, model))
@@ -86,18 +89,28 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       writeColorBytes(colors, i * 4, rgb[i * 3] * 255, rgb[i * 3 + 1] * 255, rgb[i * 3 + 2] * 255, alpha)
     })
 
-    // Added light doesn't depend on the order it's drawn in, so glowing splats aren't sorted as the camera moves
+    // Added light doesn't depend on the order it's drawn in, and nor do solid spheres, as each pixel keeps the nearest,
+    // so neither is sorted as the camera moves
     const glow = blend === 'glow'
+    const sorted = !glow && !solid
     const geometry = createGaussianSplatGeometry(centers, covariances, colors)
-    const splat = new GaussianSplat(geometry, { autoSort: !glow })
-    splat.material.colorNode = colorNode
+    const splat = new GaussianSplat(geometry, { autoSort: sorted })
+    splat.material.colorNode = solid ? solidSphereColor : colorNode
     if (glow) splat.material.blending = AdditiveBlending
+    // A solid sphere writes the depth of its surface, and its edge's fade sets how much of each pixel it covers, so its
+    // rim stays smooth with nothing behind it showing through
+    if (solid) {
+      splat.material.depthNode = sphereDepth
+      splat.material.transparent = false
+      splat.material.depthWrite = true
+      splat.material.alphaToCoverage = true
+    }
     const { scene, gl, camera } = get()
     scene.add(splat)
     // On the WebGL 2 fallback, only a sort moves the splat's data into the textures its shader reads, and the shader
     // is built for one or the other on its first draw, so an unsorted splat sorts once now, before it's ever drawn.
     // On WebGPU its draw order starts as every splat in turn
-    if (glow) {
+    if (!sorted) {
       const renderer = asWebGPU(gl)
       if (!('isWebGPUBackend' in renderer.backend)) splat.updateSort(renderer, camera)
     }
@@ -146,6 +159,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     picked,
     burial,
     blend,
+    solid,
     colorNode,
   ])
 

@@ -146,6 +146,7 @@ const stylePath = 'Look.style'
 const focusPath = 'Atoms.focus'
 const ellipsoidsPath = 'Atoms.ellipsoids'
 const bloomPath = 'Scene.bloom'
+const aoPath = 'Scene.ao'
 
 // The Colour by, Models, Alternates, Focus and Blend choices, each by its label in the panel
 const colorByOptions = {
@@ -408,6 +409,26 @@ function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
           step: 0.01,
           render: (get) => get(bloomPath) > 0,
           onChange: (bloomThreshold: number) => setOptions({ bloomThreshold }),
+        },
+        // Ambient occlusion reads the depth of what's in view, so it needs everything opaque: the spheres while they're
+        // solid, or the surface at full Opacity. The soft splats are never opaque
+        ao: {
+          label: 'AO',
+          value: defaultOptions.ao,
+          min: 0,
+          max: 1,
+          step: 0.05,
+          render: (get) => get(stylePath) !== 'soft',
+          onChange: (ao: number) => setOptions({ ao }),
+        },
+        aoRadius: {
+          label: 'AO radius',
+          value: defaultOptions.aoRadius,
+          min: 0.5,
+          max: 10,
+          step: 0.5,
+          render: (get) => get(stylePath) !== 'soft' && get(aoPath) > 0,
+          onChange: (aoRadius: number) => setOptions({ aoRadius }),
         },
       }),
       Info: folder({

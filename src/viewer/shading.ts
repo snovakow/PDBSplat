@@ -1,13 +1,20 @@
 import {
+  abs,
+  cameraFar,
+  cameraNear,
   cameraViewMatrix,
+  dFdx,
+  dFdy,
   Discard,
   dot,
   exp,
   float,
   Fn,
   If,
+  length,
   max,
   mix,
+  normalize,
   positionView,
   pow,
   renderGroup,
@@ -15,7 +22,10 @@ import {
   sqrt,
   uniform,
   varyingProperty,
+  vec2,
+  vec3,
   vec4,
+  viewZToPerspectiveDepth,
 } from 'three/tsl'
 import { defaultOptions, type ViewOptions } from '../store.ts'
 
@@ -79,24 +89,70 @@ export const softColor = Fn(() => {
 })()
 
 // A shaded sphere with a hard edge.
-// Round splats are turned to arbitrary angles, so the light comes from the viewer, which needs no direction on the splat
-export const sphereColor = Fn(() => {
-  // From 0 at the centre to 1 at the edge
-  const q = dot(splatUv, splatUv).div(4).toVar()
-  If(q.greaterThan(1), () => {
-    Discard()
-  })
-  // How directly the sphere's surface faces the viewer, from 1 at the centre to 0 at the edge
-  const facing = sqrt(q.oneMinus()).toVar()
-  const shade = facing.mul(shading).add(shading.oneMinus())
-  const glint = pow(facing, shininess).mul(highlight)
-  const rgb = splatColor.rgb.mul(shade).add(glint).toVar()
-  // Outline inks the outermost part of the radius black, and at 0 leaves the colour untouched
-  If(outline.greaterThan(0), () => {
-    const inner = outline.oneMinus()
-    rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, sqrt(q)).oneMinus())
-  })
-  // A thin fade at the rim softens its stair-steps
-  const edge = smoothstep(0.96, 1, q).oneMinus()
-  return vec4(rgb.mul(depthShade), splatColor.a.mul(opacity).mul(edge))
+// Round splats are turned to arbitrary angles, so the light comes from the viewer, which needs no direction on the splat.
+// A solid sphere hides what's behind it, so its alpha is the rim's fade alone, which only smooths its edge
+function sphereShading(solid: boolean) {
+  return Fn(() => {
+    // From 0 at the centre to 1 at the edge
+    const q = dot(splatUv, splatUv).div(4).toVar()
+    If(q.greaterThan(1), () => {
+      Discard()
+    })
+    // How directly the sphere's surface faces the viewer, from 1 at the centre to 0 at the edge
+    const facing = sqrt(q.oneMinus()).toVar()
+    const shade = facing.mul(shading).add(shading.oneMinus())
+    const glint = pow(facing, shininess).mul(highlight)
+    const rgb = splatColor.rgb.mul(shade).add(glint).toVar()
+    // Outline inks the outermost part of the radius black, and at 0 leaves the colour untouched
+    If(outline.greaterThan(0), () => {
+      const inner = outline.oneMinus()
+      rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, sqrt(q)).oneMinus())
+    })
+    // A thin fade at the rim softens its stair-steps
+    const edge = smoothstep(0.96, 1, q).oneMinus()
+    return vec4(rgb.mul(depthShade), solid ? edge : splatColor.a.mul(opacity).mul(edge))
+  })()
+}
+
+export const sphereColor = sphereShading(false)
+export const solidSphereColor = sphereShading(true)
+
+// three widens every splat's projected variance by this, in square pixels, so that none is drawn thinner than a pixel
+const screenVariance = 0.3
+// three draws each splat out to two standard deviations, so a sphere's edge is at twice its splat's scale
+const kernelCutoff = 2
+
+// The depth of a solid sphere's surface under each pixel, so that spheres that meet cut into one another along the
+// curve where they cross. A splat is drawn flat at its centre's depth, so the sphere is found from how the splat's
+// coordinates and the view position change across the screen. Those rates come first, ahead of any discard, as WGSL
+// allows them only where every pixel of a group takes the same path; three builds a material's depth before its colour.
+// Both are rates per screen pixel, so which way the screen's y runs makes no difference
+export const sphereDepth = Fn(() => {
+  const acrossX = dFdx(splatUv).toVar()
+  const acrossY = dFdy(splatUv).toVar()
+  const viewAcrossX = dFdx(positionView.xy).toVar()
+  const viewAcrossY = dFdy(positionView.xy).toVar()
+  // The pixel's view position lies on its ray at the centre's depth, so the centre is that less the pixel's offset
+  // from it: the splat coordinates taken back through their rates give the offset in pixels, and the view position's
+  // rates give it in view units
+  const det = acrossX.x.mul(acrossY.y).sub(acrossX.y.mul(acrossY.x))
+  const pixels = vec2(
+    acrossY.y.mul(splatUv.x).sub(acrossY.x.mul(splatUv.y)),
+    acrossX.x.mul(splatUv.y).sub(acrossX.y.mul(splatUv.x)),
+  ).div(det)
+  const centre = vec3(positionView.xy.sub(viewAcrossX.mul(pixels.x)).sub(viewAcrossY.mul(pixels.y)), positionView.z)
+  // three draws a sphere away from the view's centre stretched towards it but not across it, so the splat's narrowest
+  // scale in pixels, the inverse of its coordinates' steepest rate, holds the true radius once the widening is taken
+  // off, in view units per pixel at the centre's depth
+  const sum = length(vec2(acrossX.x.add(acrossY.y), acrossY.x.sub(acrossX.y)))
+  const difference = length(vec2(acrossX.x.sub(acrossY.y), acrossY.x.add(acrossX.y)))
+  const narrowest = float(2).div(sum.add(difference))
+  const perPixel = sqrt(abs(viewAcrossX.x.mul(viewAcrossY.y).sub(viewAcrossX.y.mul(viewAcrossY.x))))
+  const radius = sqrt(max(narrowest.mul(narrowest).sub(screenVariance), 0)).mul(kernelCutoff).mul(perPixel)
+  // Where the pixel's ray enters the sphere, or, where the drawn edge reaches past the sphere, where it passes nearest
+  const direction = normalize(positionView)
+  const along = dot(direction, centre)
+  const across = centre.sub(direction.mul(along))
+  const entry = along.sub(sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)))
+  return viewZToPerspectiveDepth(entry.mul(direction.z), cameraNear, cameraFar)
 })()

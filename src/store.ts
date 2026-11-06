@@ -71,6 +71,10 @@ export interface ViewOptions {
   bloom: number
   bloomRadius: number
   bloomThreshold: number
+  // How far ambient occlusion darkens the crevices of solid spheres or an opaque surface, from none at 0 to all of it
+  // at 1, and how far around each point it looks for what shades it, in ångströms
+  ao: number
+  aoRadius: number
   // How far each splat spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives
   thermal: number
   // Draws each atom as its thermal ellipsoid in place of its round splat, which Thermal then doesn't act on
@@ -86,6 +90,9 @@ export interface ViewOptions {
 // that hazes the space around the structure, from its dense core and bright atoms but not its faint edges
 const bloomRadiusDefault = 0.4
 const bloomThresholdDefault = 0.3
+// Ambient occlusion's reach until the panel moves it, in ångströms, chosen by eye on the crambin and antibody examples:
+// about an atom's width, so the contacts between neighbouring atoms darken while open faces stay bright
+const aoRadiusDefault = 3
 
 export const defaultOptions: ViewOptions = {
   colorBy: 'element',
@@ -108,6 +115,8 @@ export const defaultOptions: ViewOptions = {
   bloom: 0,
   bloomRadius: bloomRadiusDefault,
   bloomThreshold: bloomThresholdDefault,
+  ao: 0,
+  aoRadius: aoRadiusDefault,
   thermal: 0,
   ellipsoids: false,
   focus: 'all',
