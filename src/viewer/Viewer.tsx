@@ -29,6 +29,8 @@ export function Viewer() {
       <Framing controlsRef={controlsRef} bounds={bounds} />
       <Clip bounds={bounds} />
       <Picking />
+      {/* Besides copying the shading options into their uniforms, this gives the surface its depth cue, as fog on the
+          scene; the splats take theirs in their colour nodes, so the cue reaches the styles by two routes */}
       <ShadingUniforms bounds={bounds} />
       {style.kind === 'splats' ? (
         <ProteinSplats bounds={bounds} colorNode={style.colorNode} />
