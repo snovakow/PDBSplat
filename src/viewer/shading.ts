@@ -27,13 +27,20 @@ import {
   vec4,
   viewZToPerspectiveDepth,
 } from 'three/tsl'
+import type { Node, NodeMaterial } from 'three/webgpu'
 import { defaultOptions, type ViewOptions } from '../options.ts'
 
 // The splat styles' colour nodes, which replace GaussianSplat's own, and the depth cue every style shares.
-// They read the splat's own varyings by name: its position across the splat, in standard deviations, and its colour.
+// Each is built on the read of its atom's texel from the atom table: the texel's rgb is the atom's colour, and its
+// alpha carries Fade, the models' share and an alternate's occupancy. They read the splat's own varyings by name: its
+// position across the splat, in standard deviations, and its colour, whose bytes carry the atom's index and whose
+// alpha is then three's antialiasing compensation alone.
 // three cuts splats off at two standard deviations, so each style's edge is where the soft splat's is
 const splatUv = varyingProperty('vec2', 'vSplatUv')
 const splatColor = varyingProperty('vec4', 'vSplatColor')
+
+// A splat style's colour node, built on the read of its atom's texel
+export type SplatShading = (texel: Node<'vec4'>) => NonNullable<NodeMaterial['colorNode']>
 
 // A uniform three refreshes on every render for every material. One in an object's own group refreshes only when
 // that object's material or transform changes, so the surface's plain material would miss a new value through fog
@@ -75,43 +82,46 @@ export const cueFar = centreDepth.add(span)
 const depthShade = float(1).sub(depthCue.mul(smoothstep(cueNear, cueFar, positionView.z.negate())))
 
 // A soft Gaussian falloff, as three's own colour node draws it, which Hardness sharpens into a flat disc
-export const softColor = Fn(() => {
-  const r2 = dot(splatUv, splatUv).toVar()
-  If(r2.greaterThan(4), () => {
-    Discard()
-  })
-  // From 0 at the centre to 1 at the edge
-  const q = r2.div(4)
-  const falloff = exp(pow(q, pow(hardestExponent, hardness)).mul(-2))
-  // A thin fade at the rim softens a hard disc's stair-steps
-  const rim = mix(1, smoothstep(0.96, 1, q).oneMinus(), hardness)
-  return vec4(splatColor.rgb.mul(depthShade), falloff.mul(splatColor.a).mul(opacity).mul(rim))
-})()
+export const softColor: SplatShading = (texel) =>
+  Fn(() => {
+    const r2 = dot(splatUv, splatUv).toVar()
+    If(r2.greaterThan(4), () => {
+      Discard()
+    })
+    // From 0 at the centre to 1 at the edge
+    const q = r2.div(4)
+    const falloff = exp(pow(q, pow(hardestExponent, hardness)).mul(-2))
+    // A thin fade at the rim softens a hard disc's stair-steps
+    const rim = mix(1, smoothstep(0.96, 1, q).oneMinus(), hardness)
+    return vec4(texel.rgb.mul(depthShade), falloff.mul(texel.a.mul(splatColor.a)).mul(opacity).mul(rim))
+  })()
 
 // A shaded sphere with a hard edge.
 // Round splats are turned to arbitrary angles, so the light comes from the viewer, which needs no direction on the splat.
-// A solid sphere hides what's behind it, so its alpha is the rim's fade alone, which only smooths its edge
-function sphereShading(solid: boolean) {
-  return Fn(() => {
-    // From 0 at the centre to 1 at the edge
-    const q = dot(splatUv, splatUv).div(4).toVar()
-    If(q.greaterThan(1), () => {
-      Discard()
-    })
-    // How directly the sphere's surface faces the viewer, from 1 at the centre to 0 at the edge
-    const facing = sqrt(q.oneMinus()).toVar()
-    const shade = facing.mul(shading).add(shading.oneMinus())
-    const glint = pow(facing, shininess).mul(highlight)
-    const rgb = splatColor.rgb.mul(shade).add(glint).toVar()
-    // Outline inks the outermost part of the radius black, and at 0 leaves the colour untouched
-    If(outline.greaterThan(0), () => {
-      const inner = outline.oneMinus()
-      rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, sqrt(q)).oneMinus())
-    })
-    // A thin fade at the rim softens its stair-steps
-    const edge = smoothstep(0.96, 1, q).oneMinus()
-    return vec4(rgb.mul(depthShade), solid ? edge : splatColor.a.mul(opacity).mul(edge))
-  })()
+// A solid sphere is drawn whole, so its texel's alpha is full, and it hides what's behind it, so its alpha is the rim's
+// fade alone, which only smooths its edge
+function sphereShading(solid: boolean): SplatShading {
+  return (texel) =>
+    Fn(() => {
+      // From 0 at the centre to 1 at the edge
+      const q = dot(splatUv, splatUv).div(4).toVar()
+      If(q.greaterThan(1), () => {
+        Discard()
+      })
+      // How directly the sphere's surface faces the viewer, from 1 at the centre to 0 at the edge
+      const facing = sqrt(q.oneMinus()).toVar()
+      const shade = facing.mul(shading).add(shading.oneMinus())
+      const glint = pow(facing, shininess).mul(highlight)
+      const rgb = texel.rgb.mul(shade).add(glint).toVar()
+      // Outline inks the outermost part of the radius black, and at 0 leaves the colour untouched
+      If(outline.greaterThan(0), () => {
+        const inner = outline.oneMinus()
+        rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, sqrt(q)).oneMinus())
+      })
+      // A thin fade at the rim softens its stair-steps
+      const edge = smoothstep(0.96, 1, q).oneMinus()
+      return vec4(rgb.mul(depthShade), solid ? edge : texel.a.mul(splatColor.a).mul(opacity).mul(edge))
+    })()
 }
 
 export const sphereColor = sphereShading(false)
