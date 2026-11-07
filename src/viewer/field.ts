@@ -43,9 +43,6 @@ import { cueFar, cueNear, depthCue, optionUniforms } from './shading.ts'
 const extinction = 0.2
 // The step along the ray, as a share of the grid's spacing: half a point, so that no feature of the grid is skipped
 const stepShare = 0.5
-// The most steps a ray takes, half a point each, so 512 points: more than a grid's diagonal unless the grid is long
-// and thin, when a ray along it stops short of its far end
-const maxSteps = 1024
 // The ray stops once this little of the light would still get through
 const minTransmittance = 0.01
 // A direction's components are kept at least this far from zero, so that a face parallel to the ray is never a
@@ -82,6 +79,9 @@ export function fieldMarch(): FieldMarch {
   const origin = uniform(new Vector3())
   const points = uniform(new Vector3(1, 1, 1))
   const spacing = uniform(1)
+  // The most steps a ray through the grid can take: its diagonal in steps, and one more for the first step's offset,
+  // so that a ray along a long thin grid reaches its far end
+  const maxSteps = uniform(1, 'int')
 
   const colorNode = Fn(() => {
     // The ray from the camera through this fragment of the box's back face, where it ends, in scene units
@@ -155,6 +155,7 @@ export function fieldMarch(): FieldMarch {
       origin.value.fromArray(field.origin)
       points.value.fromArray(field.size)
       spacing.value = field.spacing
+      maxSteps.value = Math.ceil(Math.hypot(...field.size.map((n) => n - 1)) / stepShare) + 1
     },
     dispose() {
       density.dispose()
