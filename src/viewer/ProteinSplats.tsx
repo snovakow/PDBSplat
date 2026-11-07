@@ -33,8 +33,9 @@ import {
 import { beyondNear } from './nearPlane.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 import { asWebGPU } from './renderer.ts'
-import { solidSphereColor, sphereDepth, type SplatShading } from './shading.ts'
-import { isDepthWritten, isSolid } from './styles.ts'
+import { cutSphereColor, solidSphereColor, sphereDepth, type SplatShading } from './shading.ts'
+import { createSphereTables, disposeSphereTables, overlapCut, type SphereTables } from './sphereTable.ts'
+import { isCut, isSolid } from './styles.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
@@ -56,11 +57,13 @@ interface MergedTable {
 }
 
 // The levels while they're drawn: the atom table, what it was last painted from, the merged levels' tables painted from
-// it, and each built level's splat, finest first, with its typical drawn diameter, which the switch reads
+// it, the cut spheres' tables while the spheres are cut, and each built level's splat, finest first, with its typical
+// drawn diameter, which the switch reads
 interface Drawn {
   table: AtomTable
   painted: TablePaint | null
   merged: MergedTable[]
+  spheres: SphereTables | null
   splats: GaussianSplat[]
   diameters: number[]
 }
@@ -106,7 +109,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const blend = useStore((s) => s.options.blend)
   const detail = useStore((s) => s.options.detail)
   const solid = useStore((s) => isSolid(s.options))
-  const depthWritten = useStore((s) => isDepthWritten(s.options))
+  const cut = useStore((s) => isCut(s.options))
   // What the table is painted from, in one object that stands while its fields do. The shown atoms already follow
   // Hydrogens, Waters, Alternates and the model, which the alpha factors read as well
   const paint = useStore(
@@ -137,7 +140,11 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
 
     const centers = new Float32Array(shown.length * 3)
     const covariances = new Float32Array(shown.length * 6)
-    // Each atom's share of the blob it's merged into: its van der Waals volume at Size, which goes as its radius cubed
+    // Each atom's van der Waals radius at Size, and its share of the blob it's merged into: its van der Waals volume,
+    // which goes as that radius cubed. A round splat's sphere is drawn out to its edge, which Thermal swells, and the
+    // cut spheres' table holds that drawn radius
+    const radii = new Float32Array(shown.length)
+    const drawnRadii = new Float32Array(shown.length)
     const weights = new Float32Array(shown.length)
 
     shown.forEach((atom, i) => {
@@ -146,6 +153,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       centers[i * 3 + 2] = atom.z - bounds.center.z
 
       const radius = vdwRadius(atom.element) * scale
+      radii[i] = radius
       weights[i] = radius * radius * radius
       if (ellipsoids) {
         writeEllipsoid(covariances, i * 6, atom, scale)
@@ -154,6 +162,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
         const size = radius / kernelCutoff
         const sigma = Math.sqrt(size * size + (thermal * Math.max(atom.bFactor, 0)) / bFactorPerVariance)
         writeCovariance(covariances, i * 6, sigma, sigma, sigma, 0, 0, 0, 1)
+        drawnRadii[i] = sigma * kernelCutoff
       }
     })
 
@@ -164,7 +173,14 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     const { scene, gl, camera, size } = get()
     const renderer = asWebGPU(gl)
     const fallback = !('isWebGPUBackend' in renderer.backend)
-    const current: Drawn = { table: createAtomTable(shown.length), painted: null, merged: [], splats: [], diameters: [] }
+    const current: Drawn = {
+      table: createAtomTable(shown.length),
+      painted: null,
+      merged: [],
+      spheres: null,
+      splats: [],
+      diameters: [],
+    }
     const geometries: BufferGeometry[] = []
 
     // A level's splat on its centres and covariances, reading its table: the atom level as its style and options ask,
@@ -179,7 +195,13 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       const levelSorted = atomLevel ? sorted : !additive
       const levelSolid = atomLevel && solid
       const splat = new GaussianSplat(geometry, { autoSort: levelSorted })
-      splat.material.colorNode = (levelSolid ? solidSphereColor : colorNode)(atomTexel(table))
+      // A translucent sphere is sorted and blended as the soft splats are, and cut where its surface lies inside a
+      // neighbouring sphere, so that nothing inside the overlaps is drawn: the parts a stale order between the
+      // splats' re-sorts could draw wrong are exactly those, and what's left shows the union's surface with its creases
+      const spheres = atomLevel && cut ? createSphereTables(levelCenters, drawnRadii) : null
+      if (spheres) current.spheres = spheres
+      const shading = levelSolid ? solidSphereColor : spheres ? cutSphereColor(overlapCut(spheres)) : colorNode
+      splat.material.colorNode = shading(atomTexel(table))
       if (additive) splat.material.blending = AdditiveBlending
       // A weighted splat adds its colour and its alpha into the sums the composite resolves, so it writes its colour
       // already multiplied by its alpha, and the blend adds both as they are
@@ -191,13 +213,6 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
         splat.material.transparent = false
         splat.material.depthWrite = true
         splat.material.alphaToCoverage = true
-      } else if (atomLevel && depthWritten) {
-        // A translucent sphere is sorted and blended as the soft splats are, and writes the depth of its surface too,
-        // so that where two spheres meet the nearer cuts into the farther, and a pair drawn in a stale order between
-        // the splats' re-sorts loses only the farther one's share under the nearer, until the next re-sort brings it
-        // back
-        splat.material.depthNode = sphereDepth
-        splat.material.depthWrite = true
       }
       scene.add(splat)
       // On the WebGL 2 fallback, only a sort moves the splat's data into the textures its shader reads, and the shader
@@ -249,8 +264,6 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     // ray at its van der Waals radius at Size, as the surface does, and names an atom of the blob under the pointer.
     // The ray passes through an atom faded far out of focus, as it does through its splat at the atom level
     const pickSpheres = (): PickTest => {
-      const radii = new Float32Array(shown.length)
-      for (let i = 0; i < shown.length; i++) radii[i] = vdwRadius(shown[i].element) * scale
       const pickable = (index: number) => isPickable(current.table, index)
       const sphereHit: SphereHit = { index: -1, distance: Infinity }
       return (raycaster, hit) => {
@@ -274,9 +287,10 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       for (const geometry of geometries) geometry.dispose()
       current.table.texture.dispose()
       for (const { table } of current.merged) table.texture.dispose()
+      if (current.spheres) disposeSphereTables(current.spheres)
       drawn.current = null
     }
-  }, [get, shown, bounds, scale, thermal, ellipsoids, blend, detail, solid, depthWritten, colorNode])
+  }, [get, shown, bounds, scale, thermal, ellipsoids, blend, detail, solid, cut, colorNode])
 
   // A new colouring, Burial, Focus, Fade or pick repaints the tables the splats read, in place
   useEffect(() => {

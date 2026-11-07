@@ -2,8 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Blend, Conformations, Models, ViewOptions } from '../src/options.ts'
 import {
-  depthWriteOpacity,
-  isDepthWritten,
+  isCut,
   isOpaque,
   isSolid,
   isWeighted,
@@ -13,13 +12,13 @@ import {
   type Style,
 } from '../src/viewer/styles.ts'
 
-// The truth table of the spheres' depth rules and the styles' lookup
+// The truth table of the spheres' rules and the styles' lookup
 
 type Options = Pick<ViewOptions, 'style' | 'blend' | 'opacity' | 'focus' | 'fade' | 'models' | 'conformations' | 'ellipsoids'>
 
 const styleIds: Style[] = ['soft', 'spheres', 'surface', 'field']
 const blends: Blend[] = ['normal', 'glow', 'weighted']
-const opacities = [0.5, depthWriteOpacity, 0.9, 1]
+const opacities = [0.5, 2 / 3, 0.9, 1]
 const focuses: Pick<Options, 'focus' | 'fade'>[] = [
   { focus: 'all', fade: 0.15 },
   { focus: 'ligands', fade: 0.15 },
@@ -49,8 +48,8 @@ function* combinations(): Generator<Options> {
 }
 
 // The rules as the README states them: the spheres are whole and round in the spheres style and normal Blend, with
-// Focus on all or Fade at full, Models and Alternates on first, and Ellipsoids off; solid at full Opacity; depth-written
-// from two thirds up to full; and the view is opaque with solid spheres or the surface at full Opacity
+// Focus on all or Fade at full, Models and Alternates on first, and Ellipsoids off; solid at full Opacity; cut at their
+// overlaps at every Opacity below full; and the view is opaque with solid spheres or the surface at full Opacity
 function wholeSpheres(options: Options) {
   const faded = options.focus !== 'all' && options.fade < 1
   return (
@@ -63,11 +62,7 @@ function wholeSpheres(options: Options) {
   )
 }
 
-void test('the depth-write Opacity is two thirds', () => {
-  assert.equal(depthWriteOpacity, 2 / 3)
-})
-
-void test('the truth table of whole, solid, depth-written and opaque over every combination', () => {
+void test('the truth table of whole, solid, cut and opaque over every combination', () => {
   let rows = 0
   let whole = 0
   for (const options of combinations()) {
@@ -77,10 +72,11 @@ void test('the truth table of whole, solid, depth-written and opaque over every 
     const label = JSON.stringify(options)
     assert.equal(isWholeSpheres(options), expected, label)
     assert.equal(isSolid(options), expected && options.opacity === 1, label)
-    assert.equal(isDepthWritten(options), expected && options.opacity >= 2 / 3 && options.opacity < 1, label)
+    assert.equal(isCut(options), expected && options.opacity < 1, label)
     assert.equal(isOpaque(options), (expected && options.opacity === 1) || (options.style === 'surface' && options.opacity === 1), label)
-    // No combination is both solid and depth-written
-    assert.equal(isSolid(options) && isDepthWritten(options), false, label)
+    // No combination is both solid and cut, and whole spheres are one or the other
+    assert.equal(isSolid(options) && isCut(options), false, label)
+    assert.equal(isSolid(options) || isCut(options), expected, label)
   }
   assert.equal(rows, 4 * 3 * 4 * 4 * 3 * 2 * 2)
   // Whole spheres: normal spheres at every Opacity, with two of the four focuses, Models and Alternates first and Ellipsoids off
@@ -99,12 +95,18 @@ void test('the rows the README names', () => {
     ellipsoids: false,
   }
   assert.equal(isSolid(spheres), true)
-  assert.equal(isDepthWritten(spheres), false)
+  assert.equal(isCut(spheres), false)
   assert.equal(isOpaque(spheres), true)
   assert.equal(isSolid({ ...spheres, opacity: 0.9 }), false)
-  assert.equal(isDepthWritten({ ...spheres, opacity: 0.9 }), true)
-  assert.equal(isDepthWritten({ ...spheres, opacity: 2 / 3 }), true)
-  assert.equal(isDepthWritten({ ...spheres, opacity: 0.5 }), false)
+  assert.equal(isCut({ ...spheres, opacity: 0.9 }), true)
+  assert.equal(isCut({ ...spheres, opacity: 2 / 3 }), true)
+  assert.equal(isCut({ ...spheres, opacity: 0.5 }), true)
+  assert.equal(isCut({ ...spheres, opacity: 0 }), true)
+  assert.equal(isCut({ ...spheres, opacity: 0.9, focus: 'ligands', fade: 0.15 }), false)
+  assert.equal(isCut({ ...spheres, opacity: 0.9, blend: 'glow' }), false)
+  assert.equal(isCut({ ...spheres, opacity: 0.9, models: 'all' }), false)
+  assert.equal(isCut({ ...spheres, opacity: 0.9, conformations: 'all' }), false)
+  assert.equal(isCut({ ...spheres, opacity: 0.9, ellipsoids: true }), false)
   assert.equal(isOpaque({ ...spheres, opacity: 0.9 }), false)
   assert.equal(isWholeSpheres({ ...spheres, focus: 'ligands', fade: 1 }), true)
   assert.equal(isWholeSpheres({ ...spheres, focus: 'ligands', fade: 0.99 }), false)
@@ -125,7 +127,8 @@ void test('the rows the README names', () => {
   const field: Options = { ...spheres, style: 'field' }
   assert.equal(isOpaque(field), false)
   assert.equal(isSolid(field), false)
-  assert.equal(isDepthWritten(field), false)
+  assert.equal(isCut(field), false)
+  assert.equal(isCut({ ...field, opacity: 0.9 }), false)
   assert.equal(isWholeSpheres(field), false)
 })
 

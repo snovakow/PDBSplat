@@ -99,8 +99,9 @@ export const softColor: SplatShading = (texel) =>
 // A shaded sphere with a hard edge.
 // Round splats are turned to arbitrary angles, so the light comes from the viewer, which needs no direction on the splat.
 // A solid sphere is drawn whole, so its texel's alpha is full, and it hides what's behind it, so its alpha is the rim's
-// fade alone, which only smooths its edge
-function sphereShading(solid: boolean): SplatShading {
+// fade alone, which only smooths its edge. A translucent sphere may be cut: its alpha is also multiplied by the cut,
+// 1 where its surface lies under the pixel and 0 where the cut takes it away
+function sphereShading(solid: boolean, cut?: Node<'float'>): SplatShading {
   return (texel) =>
     Fn(() => {
       // From 0 at the centre to 1 at the edge
@@ -120,17 +121,34 @@ function sphereShading(solid: boolean): SplatShading {
       })
       // A thin fade at the rim softens its stair-steps
       const edge = smoothstep(0.96, 1, q).oneMinus()
-      return vec4(rgb.mul(depthShade), solid ? edge : texel.a.mul(splatColor.a).mul(opacity).mul(edge))
+      const translucent = texel.a.mul(splatColor.a).mul(opacity).mul(edge)
+      return vec4(rgb.mul(depthShade), solid ? edge : cut ? translucent.mul(cut) : translucent)
     })()
 }
 
 export const sphereColor = sphereShading(false)
 export const solidSphereColor = sphereShading(true)
+// A translucent sphere cut where its surface lies inside its neighbours, by a cut of 1 or 0 under each pixel
+export const cutSphereColor = (cut: Node<'float'>) => sphereShading(false, cut)
 
 // three widens every splat's projected variance by this, in square pixels, so that none is drawn thinner than a pixel
 const screenVariance = 0.3
 // three draws each splat out to two standard deviations, so a sphere's edge is at twice its splat's scale
 const kernelCutoff = 2
+
+// The direction of the pixel's ray from the camera, in view space
+export const rayDirection = normalize(positionView)
+
+// How far along the pixel's ray it enters a sphere, from the sphere's centre and radius in view space, or, where the
+// drawn edge reaches past the sphere, how far along it passes nearest. The discriminant is taken as the radius squared
+// less the ray's miss squared, which keeps its precision at the structure's distance. The sphere's depth and the cut
+// both build on it. It builds its nodes in place rather than as a shader function: as a function, the compiled
+// arithmetic rounded differently, which moved a few pixels along the solid spheres' creases
+export function sphereEntry(centre: Node<'vec3'>, radius: Node<'float'>) {
+  const along = dot(rayDirection, centre)
+  const across = centre.sub(rayDirection.mul(along))
+  return along.sub(sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)))
+}
 
 // The depth of a solid sphere's surface under each pixel, so that spheres that meet cut into one another along the
 // curve where they cross. A splat is drawn flat at its centre's depth, so the sphere is found from how the splat's
@@ -159,10 +177,5 @@ export const sphereDepth = Fn(() => {
   const narrowest = float(2).div(sum.add(difference))
   const perPixel = sqrt(abs(viewAcrossX.x.mul(viewAcrossY.y).sub(viewAcrossX.y.mul(viewAcrossY.x))))
   const radius = sqrt(max(narrowest.mul(narrowest).sub(screenVariance), 0)).mul(kernelCutoff).mul(perPixel)
-  // Where the pixel's ray enters the sphere, or, where the drawn edge reaches past the sphere, where it passes nearest
-  const direction = normalize(positionView)
-  const along = dot(direction, centre)
-  const across = centre.sub(direction.mul(along))
-  const entry = along.sub(sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)))
-  return viewZToPerspectiveDepth(entry.mul(direction.z), cameraNear, cameraFar)
+  return viewZToPerspectiveDepth(sphereEntry(centre, radius).mul(rayDirection.z), cameraNear, cameraFar)
 })()

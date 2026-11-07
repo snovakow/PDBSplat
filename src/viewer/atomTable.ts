@@ -137,7 +137,8 @@ export function atomIndexOf(rgb: Node<'vec3'>) {
 // The splat's colour varying, three's own, which carries the index bytes: three clamps it to 0–1 and the quad's four
 // corners carry one value, so each channel rounds back to its byte
 const splatColor = varyingProperty('vec4', 'vSplatColor')
-const atomIndex = atomIndexOf(splatColor.rgb)
+// The splat's atom's index, as its colour bytes carry it
+export const atomIndex = atomIndexOf(splatColor.rgb)
 
 // The read of an atom's texel from a table, by the atom's index: its row is the index over the table's width, and its
 // column the rest. The read follows the table node's texture and the width's value, so that another table can be
