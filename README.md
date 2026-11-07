@@ -69,7 +69,7 @@ To build it, run `npm run build`. It makes a static site in `dist/` that works f
 
 ## Status
 
-PDBSplat loads and draws any entry in the Protein Data Bank in the four styles above, names the atom under the pointer, and colours, fades, blurs, cuts, shades and animates the structure with the controls above, on WebGPU or on WebGL 2. The next steps: drawing the atoms as sphere impostors rather than splats, which would reach millions of atoms, and ordering translucent layers exactly, pixel by pixel, in place of the splats' sort. The ideas below are where it may go after that.
+PDBSplat loads and draws any entry in the Protein Data Bank in the four styles above, names the atom under the pointer, and colours, fades, blurs, cuts, shades and animates the structure with the controls above, on WebGPU or on WebGL 2. The next steps: drawing the atoms as sphere impostors rather than splats, which would reach millions of atoms, and ordering translucent layers exactly, pixel by pixel, in place of the splats' sort.
 
 ## Stack
 
@@ -83,11 +83,6 @@ PDBSplat loads and draws any entry in the Protein Data Bank in the four styles a
 | [WebGPU](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API) | The GPU API three.js renders with, falling back to WebGL 2 in browsers without it or on GPUs where it fails |
 
 Around them are drei's helpers, a leva control panel, zustand for app state, and Oxlint for linting.
-
-## Ideas
-
-- **The starting point**: splats generated from data rather than captured from photos, in the spirit of this [procedural splats example](https://sparkjs.dev/examples/#procedural-splats).
-- **Beyond proteins**: [The Visible Human Project](https://www.nlm.nih.gov/research/visible/visible_human.html), and meshes turned into volumes, both rendered as splats.
 
 ## Workflow
 
