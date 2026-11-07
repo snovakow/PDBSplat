@@ -102,10 +102,13 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       // Without the type, leva takes an ID like 1CRN for the number 1 with the unit CRN, as in 10px
       id: { label: 'PDB ID', value: firstEntry, type: LevaInputs.STRING },
       Load: button((get) => void load(String(get('id')))),
+      // Atoms and Scene start folded: they hold the controls that change what's drawn and the scene around it, which a
+      // visitor reaches for after the look and the colour, so that the entry, the look, the colour and the read-outs,
+      // the Status among them, sit together near the top of a panel that would otherwise run past a short window
       Look: folder(controls('Look')),
       Colour: folder(controls('Colour')),
-      Atoms: folder(controls('Atoms')),
-      Scene: folder(controls('Scene')),
+      Atoms: folder(controls('Atoms'), { collapsed: true }),
+      Scene: folder(controls('Scene'), { collapsed: true }),
       Info: folder({
         webgl: {
           label: 'Use WebGL 2',
