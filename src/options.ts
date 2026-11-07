@@ -70,8 +70,6 @@ export interface StyleChoice extends Control<Style> {
   kind: 'style'
 }
 
-export type OptionEntry = Slider | Switch | Choice<string> | StyleChoice
-
 const slider = (entry: Omit<Slider, 'kind'>): Slider => ({ kind: 'slider', ...entry })
 const toggle = (entry: Omit<Switch, 'kind'>): Switch => ({ kind: 'switch', ...entry })
 const choice = <T extends string>(entry: Omit<Choice<T>, 'kind'>): Choice<T> => ({ kind: 'choice', ...entry })
@@ -197,12 +195,12 @@ export const viewOptions = {
   // How far the near plane cuts into the structure from its front, from none at 0 to all of it at 1
   clip: slider({ folder: 'Scene', label: 'Clip', default: 0, min: 0, max: 1, step: 0.05, shownFor: every }),
   // The strength of a glow spread around bright parts of the scene, how far it spreads, from 0 to 1, and the
-  // brightness, from 0 to 1, below which nothing glows. The spread and threshold matter only while it's on. They show
-  // just below it, which says what they belong to, so their labels stay short enough for the panel's label column
+  // brightness, from 0 to 1, below which nothing glows. The spread and threshold matter only while it's on, and show
+  // just below it, each named for it as the occlusion's radius is for AO
   bloom: slider({ folder: 'Scene', label: 'Bloom', default: 0, min: 0, max: 3, step: 0.05, shownFor: every }),
   bloomRadius: slider({
     folder: 'Scene',
-    label: 'Radius',
+    label: 'Bloom radius',
     default: bloomRadiusDefault,
     min: 0,
     max: 1,
@@ -212,7 +210,7 @@ export const viewOptions = {
   }),
   bloomThreshold: slider({
     folder: 'Scene',
-    label: 'Threshold',
+    label: 'Bloom threshold',
     default: bloomThresholdDefault,
     min: 0,
     max: 1,
