@@ -33,12 +33,16 @@ import {
 import { beyondNear } from './nearPlane.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 import { asWebGPU } from './renderer.ts'
-import { cutSphereColor, solidSphereColor, sphereDepth, type SplatShading } from './shading.ts'
+import { cutSphereColor, solidSphereColor, sphereDepth, sphereEntry, sphereExit, type SplatShading } from './shading.ts'
 import { createSphereTables, disposeSphereTables, overlapCut, type SphereTables } from './sphereTable.ts'
-import { isCut, isSolid } from './styles.ts'
+import { isBackShell, isCut, isSolid } from './styles.ts'
 
 // three draws each splat out to two standard deviations, so a splat's visible edge sits at twice its scale
 const kernelCutoff = 2
+
+// The back shell's place in the draw, ahead of every splat at three's default of 0, so that the far side is drawn first
+// and the near side composites over it whatever order the sort gives the splats
+const backShellOrder = -1
 
 // A B-factor is 8π² times its atom's mean square displacement along any one axis, in square ångströms
 const bFactorPerVariance = 8 * Math.PI * Math.PI
@@ -57,8 +61,9 @@ interface MergedTable {
 }
 
 // The levels while they're drawn: the atom table, what it was last painted from, the merged levels' tables painted from
-// it, the cut spheres' tables while the spheres are cut, and each built level's splat, finest first, with its typical
-// drawn diameter, which the switch reads
+// it, the cut spheres' tables while the spheres are cut, each built level's splat, finest first, with its typical
+// drawn diameter, which the switch reads, and the back shell's splat while it's drawn, kept beside the levels' splats so
+// that the switch shows and hides it with the atom level
 interface Drawn {
   table: AtomTable
   painted: TablePaint | null
@@ -66,6 +71,7 @@ interface Drawn {
   spheres: SphereTables | null
   splats: GaussianSplat[]
   diameters: number[]
+  back: GaussianSplat | null
 }
 
 // Paints the tables from their inputs, unless they were painted from them already: the atom table from the inputs, and
@@ -83,11 +89,12 @@ const forward = new Vector3()
 // Shows the one level whose Gaussians are still a few pixels across at the view depth of the structure's centre, which
 // sits at the origin, as the camera orbits, zooms or pans, and hides the rest, which then run no sort. With the centre
 // at or behind the camera its depth sets no scale, and the finest level stands
-function showLevel({ splats, diameters }: Drawn, camera: Camera, viewportHeight: number) {
+function showLevel({ splats, diameters, back }: Drawn, camera: Camera, viewportHeight: number) {
   if (!(camera instanceof PerspectiveCamera)) return
   const centreDepth = -camera.position.dot(forward.set(0, 0, -1).applyQuaternion(camera.quaternion))
   const level = centreDepth > 0 ? levelToDraw(diameters, pixelsPerUnit(viewportHeight, camera.fov, centreDepth)) : 0
   for (let i = 0; i < splats.length; i++) splats[i].visible = i === level
+  if (back) back.visible = level === 0
 }
 
 // The groups a merged level merges: each residue, or each chain, within its own model, so that every model drawn at
@@ -110,6 +117,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
   const detail = useStore((s) => s.options.detail)
   const solid = useStore((s) => isSolid(s.options))
   const cut = useStore((s) => isCut(s.options))
+  const backShell = useStore((s) => isBackShell(s.options))
   // What the table is painted from, in one object that stands while its fields do. The shown atoms already follow
   // Hydrogens, Waters, Alternates and the model, which the alpha factors read as well
   const paint = useStore(
@@ -180,6 +188,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       spheres: null,
       splats: [],
       diameters: [],
+      back: null,
     }
     const geometries: BufferGeometry[] = []
 
@@ -200,7 +209,11 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       // splats' re-sorts could draw wrong are exactly those, and what's left shows the union's surface with its creases
       const spheres = atomLevel && cut ? createSphereTables(levelCenters, drawnRadii) : null
       if (spheres) current.spheres = spheres
-      const shading = levelSolid ? solidSphereColor : spheres ? cutSphereColor(overlapCut(spheres)) : colorNode
+      const shading = levelSolid
+        ? solidSphereColor
+        : spheres
+          ? cutSphereColor(overlapCut(spheres, sphereEntry))
+          : colorNode
       splat.material.colorNode = shading(atomTexel(table))
       if (additive) splat.material.blending = AdditiveBlending
       // A weighted splat adds its colour and its alpha into the sums the composite resolves, so it writes its colour
@@ -222,6 +235,17 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       geometries.push(geometry)
       current.splats.push(splat)
       current.diameters.push(typicalDiameter(levelCovariances, kernelCutoff))
+      // With the back shell on, a second splat on the same geometry draws the far side of the union under the near:
+      // its fragment takes the exit of the pixel's ray from its sphere, cut where the exit lies inside a neighbour, and
+      // it draws ahead of every other splat, so that back under front is the draw's doing and not the sort's. It sorts
+      // for itself, as the first does, and it's shown with the atom level alone, as the merged levels take no cut
+      if (spheres && backShell) {
+        const back = new GaussianSplat(geometry, { autoSort: true })
+        back.material.colorNode = cutSphereColor(overlapCut(spheres, sphereExit))(atomTexel(table))
+        back.renderOrder = backShellOrder
+        scene.add(back)
+        current.back = back
+      }
     }
 
     // Under auto every level is built, and the switch below shows one; a fixed Detail builds that level alone
@@ -279,7 +303,8 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
     // GaussianSplat has no dispose(): its storage buffers go when it's garbage-collected, so nothing keeps it
     return () => {
       unregister()
-      for (const splat of current.splats) {
+      const splats = current.back ? [...current.splats, current.back] : current.splats
+      for (const splat of splats) {
         scene.remove(splat)
         splat.geometry.dispose()
         splat.material.dispose()
@@ -290,7 +315,7 @@ export function ProteinSplats({ bounds, colorNode }: Props) {
       if (current.spheres) disposeSphereTables(current.spheres)
       drawn.current = null
     }
-  }, [get, shown, bounds, scale, thermal, ellipsoids, blend, detail, solid, cut, colorNode])
+  }, [get, shown, bounds, scale, thermal, ellipsoids, blend, detail, solid, cut, backShell, colorNode])
 
   // A new colouring, Burial, Focus, Fade or pick repaints the tables the splats read, in place
   useEffect(() => {

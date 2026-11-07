@@ -1,6 +1,6 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
-import { BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight } from 'three'
+import { BackSide, BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight } from 'three'
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
@@ -10,10 +10,20 @@ import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
+import { isBackShell } from './styles.ts'
 
 interface Props {
   bounds: Bounds
 }
+
+// A see-through surface's draws, in the order they go, each ahead of the colour's at three's default of 0: the far
+// side's depth alone, then its colour, then the near side's depth alone, then its colour. All four list with the
+// transparent objects, which are drawn in this order after everything opaque, so that each side's depth pass hides the
+// layers behind that side's nearest face and leaves the other side's alone; two depth passes drawn with the opaque
+// objects would share one depth, and keep the nearer face alone
+const backDepthOrder = -3
+const backOrder = -2
+const frontDepthOrder = -1
 
 // A drawn surface, with what a recolour needs: the atoms it was built from, and each vertex's atom among them; and
 // what removes its pick when it goes
@@ -21,6 +31,10 @@ interface Surface {
   mesh: Mesh<BufferGeometry, MeshStandardNodeMaterial>
   // The same mesh, drawn first into depth alone, so that a see-through surface shows only its nearest layer
   depth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
+  // The same mesh again by its back faces, drawn ahead of the two above while the back shell is on, each face lit by
+  // its normal turned inward: the surface's far side, which the near side then composites over
+  back: Mesh<BufferGeometry, MeshStandardNodeMaterial>
+  backDepth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   colors: BufferAttribute
   atoms: Atom[]
   shown: readonly Atom[]
@@ -37,9 +51,12 @@ export function ProteinSurface({ bounds }: Props) {
   const burial = useStore((s) => s.options.burial)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
+  const backShell = useStore((s) => isBackShell(s.options))
   const resolution = useStore((s) => s.options.resolution)
   const material = useRef<MeshStandardNodeMaterial | null>(null)
   const depthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
+  const backMaterial = useRef<MeshStandardNodeMaterial | null>(null)
+  const backDepthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
   const surface = useRef<Surface | null>(null)
   const headlight = useRef<PointLight>(null)
 
@@ -48,19 +65,28 @@ export function ProteinSurface({ bounds }: Props) {
     headlight.current?.position.copy(camera.position)
   })
 
-  // The materials serve every surface while this style is on, and go with the last one
+  // The materials serve every surface while this style is on, and go with the last one. The depth-only materials are
+  // transparent, though they write no colour, so that they list with the colour materials and draw in their order
   useEffect(() => {
     const created = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 })
-    const depthOnly = new MeshBasicNodeMaterial({ colorWrite: false })
+    const depthOnly = new MeshBasicNodeMaterial({ colorWrite: false, transparent: true })
+    const back = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.55, metalness: 0, side: BackSide })
+    const backDepthOnly = new MeshBasicNodeMaterial({ colorWrite: false, transparent: true, side: BackSide })
     material.current = created
     depthMaterial.current = depthOnly
+    backMaterial.current = back
+    backDepthMaterial.current = backDepthOnly
     return () => {
       if (surface.current) discard(get().scene, surface.current)
       surface.current = null
       material.current = null
       depthMaterial.current = null
+      backMaterial.current = null
+      backDepthMaterial.current = null
       created.dispose()
       depthOnly.dispose()
+      back.dispose()
+      backDepthOnly.dispose()
     }
   }, [get])
 
@@ -93,7 +119,10 @@ export function ProteinSurface({ bounds }: Props) {
       ({ mesh: built, milliseconds }) => {
         const surfaceMaterial = material.current
         const surfaceDepth = depthMaterial.current
-        if (!surfaceMaterial || !surfaceDepth || useStore.getState().atoms !== atoms) return
+        const surfaceBack = backMaterial.current
+        const surfaceBackDepth = backDepthMaterial.current
+        if (!surfaceMaterial || !surfaceDepth || !surfaceBack || !surfaceBackDepth) return
+        if (useStore.getState().atoms !== atoms) return
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', new BufferAttribute(built.positions, 3))
         geometry.setAttribute('normal', new BufferAttribute(built.normals, 3))
@@ -115,16 +144,21 @@ export function ProteinSurface({ bounds }: Props) {
         const next: Surface = {
           mesh: new Mesh(geometry, surfaceMaterial),
           depth: new Mesh(geometry, surfaceDepth),
+          back: new Mesh(geometry, surfaceBack),
+          backDepth: new Mesh(geometry, surfaceBackDepth),
           colors,
           atoms,
           shown,
           owners: built.owners,
           unregister: useStore.getState().registerPick(pick),
         }
+        next.depth.renderOrder = frontDepthOrder
+        next.back.renderOrder = backOrder
+        next.backDepth.renderOrder = backDepthOrder
         const { options } = useStore.getState()
         paint(next, options.colorBy, options.burial)
         if (surface.current) discard(scene, surface.current)
-        scene.add(next.depth, next.mesh)
+        scene.add(next.backDepth, next.back, next.depth, next.mesh)
         surface.current = next
         console.info(
           `PDBSplat: surface of ${shown.length} atoms at ${built.spacing.toFixed(2)} Å: ` +
@@ -146,19 +180,28 @@ export function ProteinSurface({ bounds }: Props) {
     if (surface.current) paint(surface.current, colorBy, burial)
   }, [colorBy, burial])
 
-  // Below full opacity, the depth pass draws first, as it's opaque, and hides every layer but the nearest
+  // Below full opacity, the near side's depth pass draws ahead of its colour and hides every layer but the nearest; with
+  // the back shell on as well, the far side's two passes draw ahead of both, so that its nearest face shows under the
+  // near side's. At full Opacity the surface is opaque and hides its far side, so the back shell draws nothing. None of
+  // this meshes the surface again
   useEffect(() => {
     const surfaceMaterial = material.current
     const surfaceDepth = depthMaterial.current
-    if (!surfaceMaterial || !surfaceDepth) return
+    const surfaceBack = backMaterial.current
+    const surfaceBackDepth = backDepthMaterial.current
+    if (!surfaceMaterial || !surfaceDepth || !surfaceBack || !surfaceBackDepth) return
     const transparent = opacity < 1
-    if (surfaceMaterial.transparent !== transparent) {
-      surfaceMaterial.transparent = transparent
-      surfaceMaterial.needsUpdate = true
+    for (const colour of [surfaceMaterial, surfaceBack]) {
+      if (colour.transparent !== transparent) {
+        colour.transparent = transparent
+        colour.needsUpdate = true
+      }
+      colour.opacity = opacity
     }
-    surfaceMaterial.opacity = opacity
     surfaceDepth.visible = transparent
-  }, [opacity])
+    surfaceBack.visible = backShell
+    surfaceBackDepth.visible = backShell
+  }, [opacity, backShell])
 
   return (
     <>
@@ -181,8 +224,8 @@ function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy, buri
   colors.needsUpdate = true
 }
 
-function discard(scene: Object3D, { mesh, depth, unregister }: Surface) {
+function discard(scene: Object3D, { mesh, depth, back, backDepth, unregister }: Surface) {
   unregister()
-  scene.remove(mesh, depth)
+  scene.remove(mesh, depth, back, backDepth)
   mesh.geometry.dispose()
 }

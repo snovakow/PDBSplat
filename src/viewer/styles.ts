@@ -64,6 +64,16 @@ export function isCut(options: SphereOptions) {
   return isWholeSpheres(options) && options.opacity < 1
 }
 
+// The options that decide whether the far side is drawn: the spheres' and the Back shell switch
+type BackShellOptions = SphereOptions & Pick<ViewOptions, 'backShell'>
+
+// Whether the far side of the structure is drawn under its near side, so that it reads as hollow glass: the Back shell
+// switch on, with the spheres cut or the surface below full Opacity. At full Opacity the spheres are solid and the
+// surface opaque, so the far side is hidden and the switch draws nothing
+export function isBackShell(options: BackShellOptions) {
+  return options.backShell && (isCut(options) || (options.style === 'surface' && options.opacity < 1))
+}
+
 // Whether everything drawn hides what's behind it, so that the depth of what's in view is all there is to see: solid
 // spheres, or the surface at full Opacity
 export function isOpaque(options: SphereOptions) {

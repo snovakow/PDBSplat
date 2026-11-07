@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Blend, Conformations, Models, ViewOptions } from '../src/options.ts'
 import {
+  isBackShell,
   isCut,
   isOpaque,
   isSolid,
@@ -14,7 +15,10 @@ import {
 
 // The truth table of the spheres' rules and the styles' lookup
 
-type Options = Pick<ViewOptions, 'style' | 'blend' | 'opacity' | 'focus' | 'fade' | 'models' | 'conformations' | 'ellipsoids'>
+type Options = Pick<
+  ViewOptions,
+  'style' | 'blend' | 'opacity' | 'focus' | 'fade' | 'models' | 'conformations' | 'ellipsoids' | 'backShell'
+>
 
 const styleIds: Style[] = ['soft', 'spheres', 'surface', 'field']
 const blends: Blend[] = ['normal', 'glow', 'weighted']
@@ -37,7 +41,9 @@ function* combinations(): Generator<Options> {
           for (const shown of models) {
             for (const conformation of conformations) {
               for (const ellipsoids of [false, true]) {
-                yield { style, blend, opacity, ...focus, models: shown, conformations: conformation, ellipsoids }
+                for (const backShell of [false, true]) {
+                  yield { style, blend, opacity, ...focus, models: shown, conformations: conformation, ellipsoids, backShell }
+                }
               }
             }
           }
@@ -49,7 +55,8 @@ function* combinations(): Generator<Options> {
 
 // The rules as the README states them: the spheres are whole and round in the spheres style and normal Blend, with
 // Focus on all or Fade at full, Models and Alternates on first, and Ellipsoids off; solid at full Opacity; cut at their
-// overlaps at every Opacity below full; and the view is opaque with solid spheres or the surface at full Opacity
+// overlaps at every Opacity below full; the view is opaque with solid spheres or the surface at full Opacity; and the
+// back shell is drawn with its switch on, for the cut spheres or the surface below full Opacity
 function wholeSpheres(options: Options) {
   const faded = options.focus !== 'all' && options.fade < 1
   return (
@@ -62,7 +69,7 @@ function wholeSpheres(options: Options) {
   )
 }
 
-void test('the truth table of whole, solid, cut and opaque over every combination', () => {
+void test('the truth table of whole, solid, cut, opaque and back shell over every combination', () => {
   let rows = 0
   let whole = 0
   for (const options of combinations()) {
@@ -74,13 +81,18 @@ void test('the truth table of whole, solid, cut and opaque over every combinatio
     assert.equal(isSolid(options), expected && options.opacity === 1, label)
     assert.equal(isCut(options), expected && options.opacity < 1, label)
     assert.equal(isOpaque(options), (expected && options.opacity === 1) || (options.style === 'surface' && options.opacity === 1), label)
+    const seeThrough = (expected || options.style === 'surface') && options.opacity < 1
+    assert.equal(isBackShell(options), options.backShell && seeThrough, label)
     // No combination is both solid and cut, and whole spheres are one or the other
     assert.equal(isSolid(options) && isCut(options), false, label)
     assert.equal(isSolid(options) || isCut(options), expected, label)
+    // The back shell is never drawn where the view is opaque
+    assert.equal(isBackShell(options) && isOpaque(options), false, label)
   }
-  assert.equal(rows, 4 * 3 * 4 * 4 * 3 * 2 * 2)
-  // Whole spheres: normal spheres at every Opacity, with two of the four focuses, Models and Alternates first and Ellipsoids off
-  assert.equal(whole, 4 * 2)
+  assert.equal(rows, 4 * 3 * 4 * 4 * 3 * 2 * 2 * 2)
+  // Whole spheres: normal spheres at every Opacity, with two of the four focuses, Models and Alternates first, Ellipsoids
+  // off and the back shell either way
+  assert.equal(whole, 4 * 2 * 2)
 })
 
 void test('the rows the README names', () => {
@@ -93,10 +105,25 @@ void test('the rows the README names', () => {
     models: 'first',
     conformations: 'first',
     ellipsoids: false,
+    backShell: false,
   }
   assert.equal(isSolid(spheres), true)
   assert.equal(isCut(spheres), false)
   assert.equal(isOpaque(spheres), true)
+  assert.equal(isBackShell(spheres), false)
+  // The back shell: the switch on, with the spheres cut or the surface see-through, and nothing at full Opacity
+  assert.equal(isBackShell({ ...spheres, backShell: true }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true }), true)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.5, backShell: true }), true)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9 }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, blend: 'glow' }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, ellipsoids: true }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, style: 'soft' }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, style: 'field' }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, style: 'surface' }), true)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true, style: 'surface', blend: 'glow' }), true)
+  assert.equal(isBackShell({ ...spheres, opacity: 1, backShell: true, style: 'surface' }), false)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, style: 'surface' }), false)
   assert.equal(isSolid({ ...spheres, opacity: 0.9 }), false)
   assert.equal(isCut({ ...spheres, opacity: 0.9 }), true)
   assert.equal(isCut({ ...spheres, opacity: 2 / 3 }), true)

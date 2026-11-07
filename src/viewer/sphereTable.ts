@@ -16,7 +16,7 @@ import {
 import type { Node } from 'three/webgpu'
 import { sphereNeighbours } from '../pdb/overlaps.ts'
 import { atomIndex, atomIndexOf, atomTexelAt, tableSize, writeAtomIndex } from './atomTable.ts'
-import { rayDirection, sphereEntry } from './shading.ts'
+import { rayDirection, type SphereCrossing } from './shading.ts'
 
 // The sphere table and the neighbour table: each shown atom's sphere, and the spheres it overlaps, in two textures the
 // translucent spheres' shader reads by the atom's index, as it reads the atom table, so that each sphere's surface can
@@ -97,13 +97,17 @@ export function disposeSphereTables({ spheres, neighbours }: SphereTables) {
 }
 
 // Whether the cut leaves the splat's sphere's surface under the pixel: 1 where the pixel's point on the sphere lies
-// outside every neighbour and 0 where it lies inside one. The point is the entry of the pixel's ray into the sphere the
-// table holds, taken to scene coordinates. The cut is hard: where a ray passes through the overlap of two spheres, its
-// entry into the nearer lies outside the other and its entry into the farther inside the nearer, so each pixel of the
-// union's surface comes from one sphere alone, and a stale sort order draws the same frame as a fresh one. A fade
-// across the neighbour's surface would smooth the crease, but there the two spheres' halves composite in sort order,
-// and that order's flip shows. No derivative is taken here, so nothing new sits ahead of the colour node's discard
-export function overlapCut({ spheres, neighbours, atomsPerRow }: SphereTables): Node<'float'> {
+// outside every neighbour and 0 where it lies inside one. The point is where the pixel's ray crosses the sphere the
+// table holds, its entry or its exit as the crossing given works it out, taken to scene coordinates. The cut is hard:
+// where a ray passes through the overlap of two spheres, its entry into the nearer lies outside the other and its entry
+// into the farther inside the nearer, so each pixel of the union's surface comes from one sphere alone, and a stale
+// sort order draws the same frame as a fresh one. The exits mirror the entries: the exit from the farther lies outside
+// the nearer and the exit from the nearer inside the farther, so the exits left outside every neighbour are the
+// union's back surface, each pixel of it from one sphere alone. Drawn in a layer of its own, before the front, the back
+// sits under the front by the draw's order rather than the sort's. A fade across the neighbour's surface would smooth
+// the crease, but there the two spheres' halves composite in sort order, and that order's flip shows. No derivative is
+// taken here, so nothing new sits ahead of the colour node's discard
+export function overlapCut({ spheres, neighbours, atomsPerRow }: SphereTables, crossing: SphereCrossing): Node<'float'> {
   const sphereNode = textureLoad(spheres)
   const sphereWidth = uniform(spheres.image.width, 'int')
   const neighbourNode = textureLoad(neighbours)
@@ -111,7 +115,7 @@ export function overlapCut({ spheres, neighbours, atomsPerRow }: SphereTables): 
   return Fn(() => {
     const index = atomIndex.toVar()
     const own = atomTexelAt(sphereNode, sphereWidth, index).toVar()
-    const viewPoint = rayDirection.mul(sphereEntry(cameraViewMatrix.mul(vec4(own.xyz, 1)).xyz, own.w))
+    const viewPoint = rayDirection.mul(crossing(cameraViewMatrix.mul(vec4(own.xyz, 1)).xyz, own.w))
     const point = cameraWorldMatrix.mul(vec4(viewPoint, 1)).xyz.toVar()
     const row = index.div(perRow).toVar()
     const column = index.sub(row.mul(perRow)).mul(maxNeighbours).toVar()

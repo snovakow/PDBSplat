@@ -139,15 +139,34 @@ const kernelCutoff = 2
 // The direction of the pixel's ray from the camera, in view space
 export const rayDirection = normalize(positionView)
 
-// How far along the pixel's ray it enters a sphere, from the sphere's centre and radius in view space, or, where the
-// drawn edge reaches past the sphere, how far along it passes nearest. The discriminant is taken as the radius squared
-// less the ray's miss squared, which keeps its precision at the structure's distance. The sphere's depth and the cut
-// both build on it. It builds its nodes in place rather than as a shader function: as a function, the compiled
-// arithmetic rounded differently, which moved a few pixels along the solid spheres' creases
-export function sphereEntry(centre: Node<'vec3'>, radius: Node<'float'>) {
+// Where the pixel's ray crosses a sphere, from the sphere's centre and radius in view space: how far along the ray the
+// centre lies, and the half-chord from there to either surface, which is 0 where the drawn edge reaches past the
+// sphere, so that the entry and the exit both fall where the ray passes nearest. The discriminant is taken as the radius
+// squared less the ray's miss squared, which keeps its precision at the structure's distance. The nodes are built in
+// place rather than as a shader function: as a function, the compiled arithmetic rounded differently, which moved a
+// few pixels along the solid spheres' creases
+function sphereChord(centre: Node<'vec3'>, radius: Node<'float'>) {
   const along = dot(rayDirection, centre)
   const across = centre.sub(rayDirection.mul(along))
-  return along.sub(sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)))
+  return { along, half: sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)) }
+}
+
+// How far along the pixel's ray it crosses a sphere's surface, as a function of the sphere's centre and radius in view
+// space: its entry or its exit
+export type SphereCrossing = (centre: Node<'vec3'>, radius: Node<'float'>) => Node<'float'>
+
+// How far along the pixel's ray it enters a sphere. The sphere's depth and the cut both build on it
+export const sphereEntry: SphereCrossing = (centre, radius) => {
+  const { along, half } = sphereChord(centre, radius)
+  return along.sub(half)
+}
+
+// How far along the pixel's ray it leaves a sphere: the entry's arithmetic with the half-chord added. The back shell's
+// cut builds on it, and the shading serves the exit as it serves the entry, since how directly the sphere's surface
+// faces the viewer is the same at both
+export const sphereExit: SphereCrossing = (centre, radius) => {
+  const { along, half } = sphereChord(centre, radius)
+  return along.add(half)
 }
 
 // The depth of a solid sphere's surface under each pixel, so that spheres that meet cut into one another along the

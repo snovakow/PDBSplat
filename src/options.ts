@@ -105,6 +105,9 @@ export const viewOptions = {
   // Times each atom's van der Waals radius
   scale: slider({ folder: 'Look', label: 'Size', default: 1, min: 0.25, max: 2, step: 0.05, shownFor: every }),
   opacity: slider({ folder: 'Look', label: 'Opacity', default: 0.9, min: 0, max: 1, step: 0.05, shownFor: every }),
+  // Below full Opacity, the far side of the spheres' union, or of the surface, drawn under the near side, so that the
+  // structure reads as hollow glass. At full Opacity the far side is hidden, and the switch draws nothing
+  backShell: toggle({ folder: 'Look', label: 'Back shell', default: false, shownFor: spheresAndSurface }),
   // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1. Spheres always keep a hard edge
   hardness: slider({ folder: 'Look', label: 'Hardness', default: 0, min: 0, max: 1, step: 0.05, shownFor: soft }),
   // The spheres style's lighting: how much the shade falls off towards the rim, the highlight's strength,
@@ -252,6 +255,7 @@ export const defaultOptions: ViewOptions = {
   resolution: viewOptions.resolution.default,
   scale: viewOptions.scale.default,
   opacity: viewOptions.opacity.default,
+  backShell: viewOptions.backShell.default,
   hardness: viewOptions.hardness.default,
   shading: viewOptions.shading.default,
   highlight: viewOptions.highlight.default,
