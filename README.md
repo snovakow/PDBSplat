@@ -17,7 +17,7 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
 - **Drag** to orbit the structure, **scroll** or pinch to zoom, and **right-drag** or drag with two fingers to pan.
 - **Point** at an atom, in any style, and a label beside the pointer names it: its atom name and element, and its alternate conformation if it has one; its residue, with any insertion code, its chain, and its model in an entry with several; its B-factor, and its occupancy when the atom is only partly there. The label hides while you drag.
 - **Click** or tap an atom to pick it, and click empty space to let it go. Even a faint atom can be picked, but not one that Focus has faded far out.
-- The **panel** at the top right. Its folders hide the controls the chosen style doesn't use:
+- The **panel** at the top right. Its folders hide the controls the chosen style doesn't use, and Atoms and Scene start folded: click a folder's name to open or close it.
   - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
   - **Look:**
     - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes, on which the atoms' colours meet along clean boundaries, or a field: the atoms' density drawn as a cloud, denser where atoms crowd and fading away at the structure's edge, coloured by the atom nearest each point.
@@ -45,7 +45,7 @@ Each atom is one round splat, sized by its element's van der Waals radius and co
   - **Scene:**
     - **Depth cue** darkens the far side of the structure, in every style, so its depth reads at a glance. It stays tied to the structure as you orbit, zoom or pan.
     - **Clip** cuts away the near part of the structure, in every style, to show its inside: halfway along, the front half is gone. The cut faces you whichever way you orbit. The splat styles lose whole atoms, while the surface and the field show where they're cut.
-    - **Bloom** spreads a soft glow around the bright parts of the scene, in every style. While it's on, **Radius** and **Threshold** below it set how far the glow spreads and how bright a part must be to give off any.
+    - **Bloom** spreads a soft glow around the bright parts of the scene, in every style. While it's on, **Bloom radius** and **Bloom threshold** below it set how far the glow spreads and how bright a part must be to give off any.
     - **AO**, for the spheres and the surface, adds ambient occlusion: it shades the contacts between atoms and the grooves of the surface, where light from all around is partly blocked. It reads the depth of what's in view, so it works only while everything drawn is opaque: the solid spheres, or the surface at full Opacity. Below that it stops. While it's on, **AO radius** below it sets how far around each point it looks for what shades it, in ångströms.
   - **Info:** **Use WebGL 2** switches to the WebGL 2 fallback described below, and **Renderer** says which one is drawing. **Entry**, **Atoms shown**, **Picked** and **Status** report the entry's ID and title, how many atoms are drawn, the picked atom, and whether it's loading or why a load failed.
 - Every slider but **Size**, **Resolution** and **Thermal** takes effect at once, as it doesn't rebuild the atoms or sample the field again, and so do **Colour by**, **Focus** and a pick, which recolour the atoms in place. **Detail** rebuilds them, and on auto builds every level at once. **Opacity** rebuilds the spheres only as it reaches full or leaves it, and **Focus** and **Fade** only as they give the spheres their creases or take them away.
@@ -68,7 +68,7 @@ To build it, run `npm run build`. It makes a static site in `dist/` that works f
 
 ## Status
 
-PDBSplat loads and draws any entry in the Protein Data Bank, with the controls above, which colour it by B-factor, along each chain and by secondary structure, and play an NMR entry's models as an animation. The ideas below are where it may go next.
+PDBSplat loads and draws any entry in the Protein Data Bank in the four styles above, names the atom under the pointer, and colours, fades, blurs, cuts, shades and animates the structure with the controls above, on WebGPU or on WebGL 2. The next steps: a switch that draws the far side of the spheres and of the surface under their near side, so a translucent structure reads as hollow glass; drawing the atoms as sphere impostors rather than splats, which would reach millions of atoms; and ordering translucent layers exactly, pixel by pixel, in place of the splats' sort. The ideas below are where it may go after that.
 
 ## Stack
 
@@ -95,7 +95,7 @@ Around them are drei's helpers, a leva control panel, zustand for app state, and
 - **Tested where it's pure.** The parts with no GPU or React in them, such as the mmCIF reader, the surface mesher, the colourings and the rules that decide what's shown, have tests that build their own inputs and pin what each guarantees, and each review runs them with the other checks.
 - **Versioned checkpoints.** Versions start at 0.0.0 and count up: each reviewed batch ends with a version commit, which marks where the next review starts.
 - **Current dependencies.** Packages and tools track their latest releases, and each review reports anything that has fallen behind.
-- **Branches and deploys.** Work lands on `development` and reaches `main` by merge. The live site is a static build of `main`.
+- **Branches and deploys.** Work lands on `development`, and each release is built for the live site from there and merged into `main`.
 
 ## Credits
 
