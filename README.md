@@ -96,7 +96,7 @@ Around them are drei's helpers, a leva control panel, zustand for app state, and
 - **Tested where it's pure.** The parts with no GPU or React in them, such as the mmCIF reader, the surface mesher, the colourings and the rules that decide what's shown, have tests that build their own inputs and pin what each guarantees, and each review runs them with the other checks.
 - **Versioned checkpoints.** Versions start at 0.0.0 and count up: each reviewed batch ends with a version commit, which marks where the next review starts.
 - **Current dependencies.** Packages and tools track their latest releases, and each review reports anything that has fallen behind.
-- **Branches and deploys.** Work lands on `development`, and each release is built for the live site from there and merged into `main`.
+- **Branches and deploys.** Work lands on `development` and reaches `main` by merge once it has settled. The live site is a static build of `main`.
 
 ## Credits
 
