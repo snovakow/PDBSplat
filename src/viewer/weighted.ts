@@ -26,7 +26,7 @@ const accumulationTarget = 'output'
 const transmittanceTarget = 'transmittance'
 
 // Sets a scene pass to sum its splats into two targets, and returns the targets and the composite that resolves them
-// over the background, the colour the pass is cleared to, as a premultiplied colour
+// over the background, the colour the sorted blend lays its splats over, as a premultiplied colour
 export function weightedBlend(scenePass: PassNode, background: Node<'vec4'>) {
   // The weight falls with view depth across the structure, between the depth cue's near and far. Every pixel of a
   // splat has its centre's view depth, as three rebuilds the fragment's position from a clip position whose depth all
@@ -35,12 +35,13 @@ export function weightedBlend(scenePass: PassNode, background: Node<'vec4'>) {
   // The splat's colour comes premultiplied by its alpha, so with the weight on it the accumulation sums colour × alpha
   // × weight beside alpha × weight. The transmittance sums −log(1 − alpha), which turns the product of what each splat
   // lets through into a sum. Both targets take the splat's additive blending, as the second would otherwise be
-  // overwritten, and both start at 0
+  // overwritten, and both are cleared to 0 here, so that the sums start empty whatever colour the renderer clears to
   const targets = mrt({
     [accumulationTarget]: output.mul(weight),
     [transmittanceTarget]: vec4(log(min(output.a, coverageLimit).oneMinus()).negate()),
   })
   targets.setBlendMode(transmittanceTarget, new BlendMode(MaterialBlending))
+  targets.setClearColor(accumulationTarget, 0, 0)
   targets.setClearColor(transmittanceTarget, 0, 0)
   scenePass.setMRT(targets)
 

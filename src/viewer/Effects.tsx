@@ -71,8 +71,8 @@ export function Effects() {
       // A pass of its own sums the splats into two targets, which the composite resolves, and the scene pass draws
       // nothing meanwhile. The targets take no multisampling, as the soft splats don't alias and the spheres' rims
       // are fades, and the renderer's half-float output type, which holds the sums without clipping. The composite
-      // lays the sum over the colour the pass is cleared to, which the sorted blend lays its splats over, taken as it
-      // is when the blend turns on
+      // lays the sum over the renderer's clear colour, which the sorted blend lays its splats over, taken as it is
+      // when the blend turns on
       const renderer = asWebGPU(gl)
       const sumPass = pass(scene, camera, { samples: 0 })
       const clear = renderer.getClearColor(new Color())
