@@ -82,16 +82,22 @@ const spheres: ShownFor = { styles: ['spheres'] }
 const spheresAndSurface: ShownFor = { styles: ['spheres', 'surface'] }
 const surfaceAndField: ShownFor = { styles: ['surface', 'field'] }
 
-// Bloom's spread and threshold until the panel moves them, chosen by eye on the antibody example in glow: a halo
-// that hazes the space around the structure, from its dense core and bright atoms but not its faint edges
-const bloomRadiusDefault = 0.4
-const bloomThresholdDefault = 0.3
-// Ambient occlusion's reach until the panel moves it, in ångströms, chosen by eye on the crambin and antibody examples:
-// about an atom's width, so the contacts between neighbouring atoms darken while open faces stay bright
-const aoRadiusDefault = 3
+// Bloom's spread and threshold until the panel moves them, chosen with the opening look below: a tight glow around the
+// spheres' highlights and their brightest atoms, rather than a haze over the whole window
+const bloomRadiusDefault = 0.25
+const bloomThresholdDefault = 0.8
+// Ambient occlusion's reach until the panel moves it, in ångströms, chosen with the opening look below: a little more
+// than an atom's width, so that the contacts between neighbouring atoms and the hollows among them darken while open
+// faces stay bright
+const aoRadiusDefault = 4
 
+// The defaults are the page's opening look, set together and chosen by eye on haemoglobin, the entry the page opens on,
+// to show a structure at its most striking: solid, glossy spheres in their chains' colours, their buried atoms and the
+// far side of the structure in shadow, ambient occlusion in the contacts between them, and a glow around their
+// brightest highlights, over the page's black. Opacity starts at full, as the spheres are solid only there, and
+// ambient occlusion acts on them only while they're solid
 export const viewOptions = {
-  style: styleChoice({ folder: 'Look', label: 'Style', default: 'soft', shownFor: every }),
+  style: styleChoice({ folder: 'Look', label: 'Style', default: 'spheres', shownFor: every }),
   // The surface and field styles' grid points per ångström: higher meshes or samples more finely, and more slowly
   resolution: slider({
     folder: 'Look',
@@ -104,7 +110,7 @@ export const viewOptions = {
   }),
   // Times each atom's van der Waals radius
   scale: slider({ folder: 'Look', label: 'Size', default: 1, min: 0.25, max: 2, step: 0.05, shownFor: every }),
-  opacity: slider({ folder: 'Look', label: 'Opacity', default: 0.9, min: 0, max: 1, step: 0.05, shownFor: every }),
+  opacity: slider({ folder: 'Look', label: 'Opacity', default: 1, min: 0, max: 1, step: 0.05, shownFor: every }),
   // Below full Opacity, the far side of the spheres' union, or of the surface, drawn under the near side, so that the
   // structure reads as hollow glass. At full Opacity the far side is hidden, and the switch draws nothing
   backShell: toggle({ folder: 'Look', label: 'Back shell', default: false, shownFor: spheresAndSurface }),
@@ -113,8 +119,8 @@ export const viewOptions = {
   // The spheres style's lighting: how much the shade falls off towards the rim, the highlight's strength,
   // how tight the highlight is, and the width of an ink rim, as a fraction of each sphere's radius
   shading: slider({ folder: 'Look', label: 'Shading', default: 0.75, min: 0, max: 1, step: 0.05, shownFor: spheres }),
-  highlight: slider({ folder: 'Look', label: 'Highlight', default: 0.35, min: 0, max: 1, step: 0.05, shownFor: spheres }),
-  shininess: slider({ folder: 'Look', label: 'Shininess', default: 24, min: 1, max: 64, step: 1, shownFor: spheres }),
+  highlight: slider({ folder: 'Look', label: 'Highlight', default: 0.7, min: 0, max: 1, step: 0.05, shownFor: spheres }),
+  shininess: slider({ folder: 'Look', label: 'Shininess', default: 40, min: 1, max: 64, step: 1, shownFor: spheres }),
   outline: slider({ folder: 'Look', label: 'Outline', default: 0, min: 0, max: 0.3, step: 0.01, shownFor: spheres }),
   // Blending acts on splats, so the surface leaves it out
   blend: choice<Blend>({
@@ -136,12 +142,12 @@ export const viewOptions = {
   colorBy: choice<ColorBy>({
     folder: 'Colour',
     label: 'Colour by',
-    default: 'element',
+    default: 'chain',
     choices: { element: 'element', chain: 'chain', 'B-factor': 'bfactor', rainbow: 'rainbow', structure: 'structure' },
     shownFor: every,
   }),
   // How far buried atoms darken, from none at 0 to black for the most buried at 1
-  burial: slider({ folder: 'Colour', label: 'Burial', default: 0, min: 0, max: 1, step: 0.05, shownFor: every }),
+  burial: slider({ folder: 'Colour', label: 'Burial', default: 0.5, min: 0, max: 1, step: 0.05, shownFor: every }),
   hydrogens: toggle({ folder: 'Atoms', label: 'Hydrogens', default: true, shownFor: every }),
   waters: toggle({ folder: 'Atoms', label: 'Waters', default: false, shownFor: every }),
   // An NMR entry's models, and the alternate conformations some residues have, in every style. An entry with one
@@ -194,13 +200,13 @@ export const viewOptions = {
     shownWhile: { option: 'focus', isNot: 'all' },
   }),
   // How far the far side of the structure darkens, from none at 0 to black at 1
-  depthCue: slider({ folder: 'Scene', label: 'Depth cue', default: 0, min: 0, max: 1, step: 0.05, shownFor: every }),
+  depthCue: slider({ folder: 'Scene', label: 'Depth cue', default: 0.85, min: 0, max: 1, step: 0.05, shownFor: every }),
   // How far the near plane cuts into the structure from its front, from none at 0 to all of it at 1
   clip: slider({ folder: 'Scene', label: 'Clip', default: 0, min: 0, max: 1, step: 0.05, shownFor: every }),
   // The strength of a glow spread around bright parts of the scene, how far it spreads, from 0 to 1, and the
   // brightness, from 0 to 1, below which nothing glows. The spread and threshold matter only while it's on, and show
   // just below it, each named for it as the occlusion's radius is for AO
-  bloom: slider({ folder: 'Scene', label: 'Bloom', default: 0, min: 0, max: 3, step: 0.05, shownFor: every }),
+  bloom: slider({ folder: 'Scene', label: 'Bloom', default: 1, min: 0, max: 3, step: 0.05, shownFor: every }),
   bloomRadius: slider({
     folder: 'Scene',
     label: 'Bloom radius',
@@ -225,7 +231,7 @@ export const viewOptions = {
   // at 1, and how far around each point it looks for what shades it, in ångströms. It reads the depth of what's in
   // view, so it needs everything opaque: the spheres while they're solid, or the surface at full Opacity. The soft
   // splats are never opaque
-  ao: slider({ folder: 'Scene', label: 'AO', default: 0, min: 0, max: 1, step: 0.05, shownFor: spheresAndSurface }),
+  ao: slider({ folder: 'Scene', label: 'AO', default: 1, min: 0, max: 1, step: 0.05, shownFor: spheresAndSurface }),
   aoRadius: slider({
     folder: 'Scene',
     label: 'AO radius',

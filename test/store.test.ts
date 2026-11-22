@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { defaultOptions, isOption, optionKeys, viewOptions, type Folder, type ViewOptions } from '../src/options.ts'
 import type { Atom } from '../src/pdb/mmcif.ts'
-import { isShown, shownAtoms, shownModel, useStore } from '../src/store.ts'
+import { examples, firstEntry, isShown, shownAtoms, shownModel, useStore } from '../src/store.ts'
+import { isOpaque, isSolid, styles } from '../src/viewer/styles.ts'
 
 // The store's pure rules: which atoms are shown, which model, the shown atoms' one array, that unchanged options keep
-// their object, and that the options table gives the defaults
+// their object, that the options table gives the defaults, and that the opening look holds together
 
 const base: Atom = {
   element: 'C',
@@ -87,7 +88,7 @@ void test('setOptions keeps the same options object while nothing changes', (t) 
   assert.notEqual(useStore.getState().options, changed)
   assert.equal(useStore.getState().options.blend, 'glow')
   // The defaults are untouched
-  assert.equal(defaultOptions.opacity, 0.9)
+  assert.equal(defaultOptions.opacity, 1)
   assert.equal(defaultOptions.blend, 'normal')
 })
 
@@ -103,7 +104,7 @@ void test('shownAtoms gives the same array while the entry, Hydrogens, Waters, A
   assert.deepEqual(shown, [heavy, hydrogen])
   // Another state with the same inputs, as every other change to the store leaves them, gives the very same array
   assert.equal(shownAtoms(state({})), shown)
-  assert.equal(shownAtoms(state({ opacity: 0.5, colorBy: 'chain', style: 'surface' })), shown)
+  assert.equal(shownAtoms(state({ opacity: 0.5, colorBy: 'element', style: 'surface' })), shown)
   assert.equal(shownAtoms(state({ models: 'play' }, 1)), shown)
   // Any of its inputs changing gives a new one
   const fewer = shownAtoms(state({ hydrogens: false }))
@@ -135,15 +136,30 @@ void test('the options table gives the defaults, in the panel folders, with ever
       assert.ok(entry.default >= entry.min && entry.default <= entry.max, key)
     }
     if (entry.kind === 'choice') assert.ok(Object.values(entry.choices).includes(entry.default), key)
-    if (entry.kind === 'style') assert.equal(entry.default, 'soft')
+    if (entry.kind === 'style') assert.ok(styles.some((style) => style.id === entry.default), key)
     // A control another hides names that control by its key, which is an option of its own
     if (entry.shownWhile) assert.ok(isOption(entry.shownWhile.option), `${key} depends on ${entry.shownWhile.option}`)
   }
   assert.equal(isOption('toString'), false)
   assert.equal(isOption('style'), true)
   // The values the page opens with
-  assert.equal(defaultOptions.style, 'soft')
-  assert.equal(defaultOptions.opacity, 0.9)
+  assert.equal(defaultOptions.style, 'spheres')
+  assert.equal(defaultOptions.opacity, 1)
+  assert.equal(defaultOptions.colorBy, 'chain')
   assert.equal(defaultOptions.hydrogens, true)
   assert.equal(defaultOptions.waters, false)
+})
+
+void test('the opening look is solid spheres, which its ambient occlusion acts on, on one of the examples', () => {
+  // The look leans on ambient occlusion, which acts only while everything drawn is opaque, as the solid spheres are.
+  // A default that kept the spheres from being solid, such as Opacity below full or a Focus other than all, would
+  // turn it off unseen
+  assert.equal(isSolid(defaultOptions), true)
+  assert.equal(isOpaque(defaultOptions), true)
+  assert.ok(defaultOptions.ao > 0)
+  // The rest of the look is on: the shadows of depth and burial, and the glow
+  assert.ok(defaultOptions.depthCue > 0 && defaultOptions.burial > 0 && defaultOptions.bloom > 0)
+  // The Example list shows the entry the page opens on
+  assert.equal(firstEntry, '4HHB')
+  assert.ok(examples.some((example) => example.id === firstEntry))
 })

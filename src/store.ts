@@ -21,8 +21,9 @@ export const examples = [
   { id: '1IGT', name: 'antibody' },
 ] as const
 
-// Crambin, small and quick to load
-export const firstEntry: string = examples[0].id
+// Haemoglobin, whose four chains fill the window, each in its own colour, and on which the opening look was chosen.
+// It's one of the examples, so that the Example list shows it
+export const firstEntry: string = '4HHB' satisfies (typeof examples)[number]['id']
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 
