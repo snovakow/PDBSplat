@@ -48,7 +48,7 @@ export function ProteinField({ bounds }: Props) {
   // The box is a unit cube scaled and placed to each field's grid. Its back faces are drawn, so that the march runs
   // from the camera to the far side of the box whichever side the camera is on, and the cloud is laid over what's
   // behind it by the alpha the march gives, with its colour already multiplied by it. It writes no depth, as a cloud
-  // hides nothing, and takes no fog, as the march applies the depth cue point by point
+  // hides nothing
   useEffect(() => {
     const { scene } = get()
     const march = fieldMarch()
@@ -57,7 +57,6 @@ export function ProteinField({ bounds }: Props) {
     material.side = BackSide
     material.transparent = true
     material.depthWrite = false
-    material.fog = false
     material.blending = CustomBlending
     material.blendSrc = OneFactor
     material.blendDst = OneMinusSrcAlphaFactor
@@ -159,6 +158,7 @@ function paintOf(shown: readonly Atom[], entry: readonly Atom[], colorBy: ColorB
     model: 0,
     modelCount: 1,
     conformations: 'first',
+    layered: false,
   }
 }
 

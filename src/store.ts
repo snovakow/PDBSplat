@@ -1,7 +1,7 @@
 import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
-import { defaultOptions, type ViewOptions } from './options.ts'
+import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import { defaultAtoms, type Atom } from './pdb/mmcif.ts'
 
@@ -26,6 +26,15 @@ export const examples = [
 export const firstEntry: string = '4HHB' satisfies (typeof examples)[number]['id']
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
+
+// The options the page opens with: the defaults, with Spin off for a visitor whose system asks for reduced motion, as a
+// view that moves by itself is the motion that setting asks a page to leave out
+export function openingOptions(reducedMotion: boolean): ViewOptions {
+  return reducedMotion ? { ...defaultOptions, spin: false } : defaultOptions
+}
+
+// Whether the visitor's system asks for reduced motion. The tests run with no window to ask
+const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
 // Whether an atom is drawn, by Hydrogens, Waters and Conformations, and by the model shown, or every model for null
 export function isShown(
@@ -82,6 +91,23 @@ export function shownAtoms(state: Pick<State, 'atoms' | 'options' | 'models' | '
   return shown
 }
 
+// What the entry was last found to hold, so that the same object comes back while its atoms and models stand
+let lastHeld: { atoms: readonly Atom[]; models: readonly number[]; holds: EntryHolds } | null = null
+
+// What the entry holds that a control acts on: more than one model, atoms recorded in alternate positions, waters,
+// and hydrogens. Before an entry loads it holds none of them
+export function entryHolds({ atoms, models }: Pick<State, 'atoms' | 'models'>): EntryHolds {
+  if (lastHeld && lastHeld.atoms === atoms && lastHeld.models === models) return lastHeld.holds
+  const holds: EntryHolds = {
+    models: models.length > 1,
+    alternates: atoms.some((atom) => atom.altLoc !== ''),
+    waters: atoms.some((atom) => atom.water),
+    hydrogens: atoms.some((atom) => atom.hydrogen),
+  }
+  lastHeld = { atoms, models, holds }
+  return holds
+}
+
 // The nearest atom a ray has met so far, and how far along the ray, or null and Infinity before any
 export interface PickHit {
   atom: Atom | null
@@ -128,7 +154,7 @@ export const useStore = create<State>()((set) => ({
   model: 0,
   status: 'idle',
   error: null,
-  options: defaultOptions,
+  options: openingOptions(reducedMotion),
   hovered: null,
   picked: null,
   picks: [],

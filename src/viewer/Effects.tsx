@@ -7,7 +7,7 @@ import type SSAONode from 'three/addons/tsl/display/SSAONode.js'
 import { ssao } from 'three/addons/tsl/display/SSAONode.js'
 import { getNormalFromDepth, mix, pass, sample, uniform, vec4 } from 'three/tsl'
 import { RenderPipeline, type Node, type PassNode, type UniformNode } from 'three/webgpu'
-import { useStore } from '../store.ts'
+import { entryHolds, useStore } from '../store.ts'
 import { asWebGPU } from './renderer.ts'
 import { isOpaque, isWeighted } from './styles.ts'
 import { weightedBlend } from './weighted.ts'
@@ -20,13 +20,22 @@ const renderPriority = 1
 // spheres and the surface's grooves read as shade, while open faces stay bright
 const occlusionStrength = 3
 
+// How far above its threshold a part's brightness climbs before all of its light glows, as a share of full brightness.
+// At three's own hundredth, a highlight flickers the whole of its glow on and off as it crosses the threshold from
+// frame to frame, which shimmers as the view turns; across this much it comes and goes gradually
+const bloomKnee = 0.15
+
+// Ambient occlusion is worked out at the window's full resolution rather than three's half, whose blocks of four
+// pixels change shade together as the view turns, which reads as grain crawling in the crevices
+const occlusionResolution = 1
+
 // The pipeline and the pass that draws the scene into it, which last while the effects are mounted
 interface Stage {
   pipeline: RenderPipeline
   scenePass: PassNode
 }
 
-// The scene drawn through a pipeline of passes, in place of R3F's own render: the weighted blend sums the splats into
+// The scene drawn through a pipeline of passes, in place of R3F's own render: the weighted sum adds the splats into
 // two targets and composites them, ambient occlusion darkens the scene's crevices while everything in it is opaque,
 // and bloom spreads a glow around its bright parts. It renders only while it's mounted, so the scene renders directly
 // whenever there's no effect to apply
@@ -37,7 +46,7 @@ export function Effects() {
   const strength = useStore((s) => s.options.bloom)
   const radius = useStore((s) => s.options.bloomRadius)
   const threshold = useStore((s) => s.options.bloomThreshold)
-  const aoOn = useStore((s) => s.options.ao > 0 && isOpaque(s.options))
+  const aoOn = useStore((s) => s.options.ao > 0 && isOpaque(s.options, entryHolds(s)))
   const ao = useStore((s) => s.options.ao)
   const aoRadius = useStore((s) => s.options.aoRadius)
   const stage = useRef<Stage | null>(null)
@@ -69,10 +78,9 @@ export function Effects() {
 
     if (weighted) {
       // A pass of its own sums the splats into two targets, which the composite resolves, and the scene pass draws
-      // nothing meanwhile. The targets take no multisampling, as the soft splats don't alias and the spheres' rims
-      // are fades, and the renderer's half-float output type, which holds the sums without clipping. The composite
-      // lays the sum over the renderer's clear colour, which the sorted blend lays its splats over, taken as it is
-      // when the blend turns on
+      // nothing meanwhile. The targets take no multisampling, as the soft splats don't alias, and the renderer's
+      // half-float output type, which holds the sums without clipping. The composite lays the sum over the
+      // renderer's clear colour, taken as it is when the sum turns on
       const renderer = asWebGPU(gl)
       const sumPass = pass(scene, camera, { samples: 0 })
       const clear = renderer.getClearColor(new Color())
@@ -87,7 +95,7 @@ export function Effects() {
     if (aoOn) {
       // A second pass draws only what's opaque, without multisampling, for a depth that can be read pixel by pixel.
       // The splats carry no normals, so the occlusion's normals are rebuilt from that depth. The camera's inverse
-      // projection goes in as a uniform, which follows it as the window resizes or Clip moves the near plane
+      // projection goes in as a uniform, which follows it as the window resizes or a new entry moves the near plane
       const depthPass = pass(scene, camera, { samples: 0 })
       depthPass.transparent = false
       const depth = depthPass.getTextureNode('depth')
@@ -97,6 +105,7 @@ export function Effects() {
       const aoNode = ssao(depth, normals, camera)
       aoNode.radius.value = options.aoRadius
       aoNode.intensity.value = occlusionStrength
+      aoNode.resolutionScale = occlusionResolution
       const amount = uniform(options.ao)
       output = vec4(sceneColor.rgb.mul(mix(1, aoNode.r, amount)), sceneColor.a)
       occlusion.current = aoNode
@@ -107,6 +116,7 @@ export function Effects() {
     if (bloomOn) {
       // Bloom's settings are uniforms, which the effects below set without building the pipeline again
       const bloomNode = bloom(sceneColor, options.bloom, options.bloomRadius, options.bloomThreshold)
+      bloomNode.smoothWidth.value = bloomKnee
       output = output.add(bloomNode)
       glow.current = bloomNode
       made.push(bloomNode)

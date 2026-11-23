@@ -1,15 +1,16 @@
-import { useFrame, useThree } from '@react-three/fiber'
+import { useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
-import { BackSide, BufferAttribute, BufferGeometry, Mesh, type Object3D, type PointLight } from 'three'
-import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
+import { BackSide, BufferAttribute, BufferGeometry, Mesh, type Object3D } from 'three'
+import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
 import type { ColorBy } from '../options.ts'
-import { shownAtoms, useStore, type PickTest } from '../store.ts'
+import { entryHolds, shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
+import { cutMask, meshColor, samePlacement } from './shading.ts'
 import { isBackShell } from './styles.ts'
 
 interface Props {
@@ -28,12 +29,12 @@ const frontDepthOrder = -1
 // A drawn surface, with what a recolour needs: the atoms it was built from, and each vertex's atom among them; and
 // what removes its pick when it goes
 interface Surface {
-  mesh: Mesh<BufferGeometry, MeshStandardNodeMaterial>
+  mesh: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   // The same mesh, drawn first into depth alone, so that a see-through surface shows only its nearest layer
   depth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
-  // The same mesh again by its back faces, drawn ahead of the two above while the back shell is on, each face lit by
-  // its normal turned inward: the surface's far side, which the near side then composites over
-  back: Mesh<BufferGeometry, MeshStandardNodeMaterial>
+  // The same mesh again by its back faces, drawn ahead of the two above while the back shell is on: the surface's far
+  // side, which the near side then composites over
+  back: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   backDepth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   colors: BufferAttribute
   atoms: Atom[]
@@ -42,7 +43,7 @@ interface Surface {
   unregister: () => void
 }
 
-// The shown atoms' surface, meshed by marching cubes in a worker, and lit from above and below and from the camera
+// The shown atoms' surface, meshed by marching cubes in a worker, and lit from the viewer, as the spheres are
 export function ProteinSurface({ bounds }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
@@ -51,27 +52,29 @@ export function ProteinSurface({ bounds }: Props) {
   const burial = useStore((s) => s.options.burial)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
-  const backShell = useStore((s) => isBackShell(s.options))
+  const backShell = useStore((s) => isBackShell(s.options, entryHolds(s)))
   const resolution = useStore((s) => s.options.resolution)
-  const material = useRef<MeshStandardNodeMaterial | null>(null)
+  const material = useRef<MeshBasicNodeMaterial | null>(null)
   const depthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
-  const backMaterial = useRef<MeshStandardNodeMaterial | null>(null)
+  const backMaterial = useRef<MeshBasicNodeMaterial | null>(null)
   const backDepthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
   const surface = useRef<Surface | null>(null)
-  const headlight = useRef<PointLight>(null)
-
-  // The headlight follows the camera, so the side in view is always lit
-  useFrame(({ camera }) => {
-    headlight.current?.position.copy(camera.position)
-  })
 
   // The materials serve every surface while this style is on, and go with the last one. The depth-only materials are
   // transparent, though they write no colour, so that they list with the colour materials and draw in their order
   useEffect(() => {
-    const created = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 })
+    const created = new MeshBasicNodeMaterial()
     const depthOnly = new MeshBasicNodeMaterial({ colorWrite: false, transparent: true })
-    const back = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.55, metalness: 0, side: BackSide })
+    const back = new MeshBasicNodeMaterial({ side: BackSide })
     const backDepthOnly = new MeshBasicNodeMaterial({ colorWrite: false, transparent: true, side: BackSide })
+    // The colour takes its lighting and its depth cue from the shading
+    for (const colour of [created, back]) colour.colorNode = meshColor
+    // Clip opens the surface where it's cut, in every one of its draws, and each draw places the mesh alike, so that
+    // a side's colour meets the depth its depth pass wrote
+    for (const each of [created, depthOnly, back, backDepthOnly]) {
+      each.maskNode = cutMask
+      each.contextNode = samePlacement
+    }
     material.current = created
     depthMaterial.current = depthOnly
     backMaterial.current = back
@@ -203,12 +206,7 @@ export function ProteinSurface({ bounds }: Props) {
     surfaceBackDepth.visible = backShell
   }, [opacity, backShell])
 
-  return (
-    <>
-      <hemisphereLight args={['#ffffff', '#404040', 1]} />
-      <pointLight ref={headlight} decay={0} intensity={2.2} />
-    </>
-  )
+  return null
 }
 
 // Each vertex takes the colour of the atom adding the most density there

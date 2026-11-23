@@ -29,7 +29,7 @@ export interface Atom {
   water: boolean
   structure: SecondaryStructure
   // The atom's anisotropic mean square displacement U, in square ångströms, as the six values of its symmetric tensor
-  // in the order three's splat covariances take: U11, U12, U13, U22, U23 and U33. It's in the same Cartesian frame as
+  // in the order the ellipsoids' covariances take: U11, U12, U13, U22, U23 and U33. It's in the same Cartesian frame as
   // the coordinates, as the PDB's format guide says of the ANISOU records the table carries. Null where the entry
   // gives the atom none
   u: Float32Array | null
@@ -345,8 +345,8 @@ function rangeReader(columns: string[], category: string, ranges: Range[]) {
   return { read }
 }
 
-// The anisotropic table's columns usually run U11, U22, U33, U12, U13, U23, while three's covariances take U11, U12,
-// U13, U22, U23, U33: each of three's six in turn, by the name of the column it's read from
+// The anisotropic table's columns usually run U11, U22, U33, U12, U13, U23, while a covariance here takes U11, U12,
+// U13, U22, U23, U33: each of those six in turn, by the name of the column it's read from
 const tensorColumns = ['[1][1]', '[1][2]', '[1][3]', '[2][2]', '[2][3]', '[3][3]']
 
 // A B tensor is 8π² times its U, as a B-factor is

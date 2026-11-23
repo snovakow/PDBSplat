@@ -4,19 +4,19 @@ import { Color } from 'three'
 import type { Atom } from '../src/pdb/mmcif.ts'
 import { atomColors } from '../src/viewer/atomColors.ts'
 import {
-  atomTexel,
   createAtomTable,
   isPickable,
   minPickOpacity,
+  paintAtoms,
   paintAtomTable,
-  paintMergedTable,
+  paintMerged,
   readAtomIndex,
   tableSize,
-  writeAtomIndex,
   type TablePaint,
 } from '../src/viewer/atomTable.ts'
 
-// The atom table: the index bytes, the texture's shape, each painted texel's colour and alpha, and the pick's threshold
+// The atoms' paint: the index bytes the field's table is read by, the table's shape, each painted atom's colour and
+// alpha, and the pick's threshold
 
 // The burial reports its timing on the console, which the suite's output does without
 mock.method(console, 'info', () => undefined)
@@ -69,6 +69,7 @@ const defaults: Omit<TablePaint, 'shown' | 'entry'> = {
   model: 1,
   modelCount: 2,
   conformations: 'first',
+  layered: false,
 }
 
 // The atoms shown under a paint's model and Alternates, as the store selects them
@@ -85,26 +86,20 @@ function painted(entry: readonly Atom[], changes: Partial<TablePaint>) {
   const shown = shownUnder(entry, paint)
   const table = createAtomTable(shown.length)
   paintAtomTable(table, { ...paint, shown, entry })
-  return { table, shown }
+  return { table, shown, paint }
 }
 
 const texel = (bytes: Uint8ClampedArray, i: number) => [...bytes.subarray(i * 4, i * 4 + 4)]
 const byte = (value: number) => Math.round(value * 255)
 
-void test('the index bytes round-trip through the splat\'s colour, with a full alpha', () => {
-  const indices = [0, 1, 255, 256, 65535, 65536, 16777215]
-  const bytes = new Uint8ClampedArray(indices.length * 4)
-  indices.forEach((index, i) => writeAtomIndex(bytes, i * 4, index))
-  indices.forEach((index, i) => {
-    assert.equal(readAtomIndex(bytes, i * 4), index)
-    assert.equal(bytes[i * 4 + 3], 255)
-  })
-  // The red is the low byte, the green the middle and the blue the high, as the shader puts them back together
-  assert.deepEqual(texel(bytes, 2), [255, 0, 0, 255])
-  assert.deepEqual(texel(bytes, 3), [0, 1, 0, 255])
-  assert.deepEqual(texel(bytes, 4), [255, 255, 0, 255])
-  assert.deepEqual(texel(bytes, 5), [0, 0, 1, 255])
-  assert.deepEqual(texel(bytes, 6), [255, 255, 255, 255])
+void test('an index is read from three bytes, the red the low, the green the middle and the blue the high', () => {
+  const bytes = new Uint8ClampedArray([0, 0, 0, 255, 1, 0, 0, 255, 255, 0, 0, 255, 0, 1, 0, 255, 255, 255, 0, 255])
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map((i) => readAtomIndex(bytes, i * 4)),
+    [0, 1, 255, 256, 65535],
+  )
+  assert.equal(readAtomIndex(new Uint8ClampedArray([0, 0, 1, 255]), 0), 65536)
+  assert.equal(readAtomIndex(new Uint8ClampedArray([255, 255, 255, 255]), 0), 16777215)
 })
 
 void test('the table is as wide as the square root of the count rounded up, and as tall as it then needs', () => {
@@ -161,11 +156,17 @@ void test('an atom out of focus keeps Fade\'s share of its alpha, and one in foc
   assert.deepEqual(picked.shown.map((_, i) => picked.table.bytes[i * 4 + 3]), [0, 0, 255, 255, 0])
 })
 
-void test('every model at once gives each atom one over the square root of the model count', () => {
+void test('every model at once gives each atom one over the square root of the model count, unless layered', () => {
   const entry = entryOf()
   const { table, shown } = painted(entry, { model: null, modelCount: 2 })
   assert.equal(shown.length, 10)
   for (let i = 0; i < shown.length; i++) assert.equal(table.bytes[i * 4 + 3], 180)
+  // Layered, only the nearest see-through surface shows, so each model's atoms stay whole, and solid
+  const layered = painted(entry, { model: null, modelCount: 2, layered: true })
+  for (let i = 0; i < layered.shown.length; i++) assert.equal(layered.table.bytes[i * 4 + 3], 255)
+  // An alternate still keeps its occupancy's share, and an atom out of focus Fade's
+  const alternates = painted(entry, { conformations: 'all', layered: true })
+  assert.deepEqual(alternates.shown.map((_, i) => alternates.table.bytes[i * 4 + 3]), [255, 153, 102, 255, 255, 255])
 })
 
 void test('every alternate at once gives an alternate its occupancy\'s share, and the rest a full alpha', () => {
@@ -178,48 +179,49 @@ void test('every alternate at once gives an alternate its occupancy\'s share, an
   assert.equal(all.table.bytes[2 * 4 + 3], 11)
 })
 
-void test('the pick skips an atom whose table alpha is below a fifth of full, as three\'s raycast does by a splat\'s own', () => {
+void test('the pick passes through an atom whose alpha is below a fifth of full', () => {
   assert.equal(minPickOpacity, 0.2)
-  const table = createAtomTable(3)
-  table.bytes.set([0, 0, 0, 50, 0, 0, 0, 51, 0, 0, 0, 255])
-  assert.equal(isPickable(table, 0), false)
-  assert.equal(isPickable(table, 1), true)
-  assert.equal(isPickable(table, 2), true)
+  const bytes = new Uint8ClampedArray([0, 0, 0, 50, 0, 0, 0, 51, 0, 0, 0, 255])
+  assert.equal(isPickable(bytes, 0), false)
+  assert.equal(isPickable(bytes, 1), true)
+  assert.equal(isPickable(bytes, 2), true)
   // At the default Fade an atom out of focus can't be picked, and from a Fade of a fifth it can
   const entry = entryOf()
   const faded = painted(entry, { focus: 'ligands', fade: 0.15 })
-  assert.equal(isPickable(faded.table, 0), false)
-  assert.equal(isPickable(faded.table, 2), true)
+  assert.equal(isPickable(faded.table.bytes, 0), false)
+  assert.equal(isPickable(faded.table.bytes, 2), true)
   const fifth = painted(entry, { focus: 'ligands', fade: 0.2 })
-  assert.equal(isPickable(fifth.table, 0), true)
+  assert.equal(isPickable(fifth.table.bytes, 0), true)
 })
 
-void test('the read of a texel loads the table by texel coordinates rather than sampling it', () => {
-  const table = createAtomTable(5)
-  const read = atomTexel(table)
-  assert.equal(read.value, table.texture)
-  assert.equal(read.sampler, false)
+void test('the ellipsoids\' paint and the field\'s table are painted alike, and only the table sends a texture', () => {
+  const entry = entryOf()
+  const { table, paint, shown } = painted(entry, { focus: 'ligands', fade: 0.15 })
+  const bytes = new Uint8ClampedArray(shown.length * 4)
+  paintAtoms(bytes, { ...paint, shown, entry })
+  assert.deepEqual([...bytes], [...table.bytes.subarray(0, bytes.length)])
+  // Painting the table again has its texture sent again
+  const version = table.texture.version
+  paintAtomTable(table, { ...paint, shown, entry })
+  assert.equal(table.texture.version, version + 1)
 })
 
-void test("a merged level's texel is the weighted mean of its members' colours and alphas", () => {
+void test("a merged level's paint is the weighted mean of its members' colours and alphas", () => {
   const entry = entryOf()
   const { table, shown } = painted(entry, { focus: 'ligands', fade: 0.15 })
   // The first residue's two atoms in one group, the second residue's two in another, and the ligand alone
   const grouping = { groups: new Uint32Array([0, 0, 1, 1, 2]), count: 3 }
-  const merged = createAtomTable(grouping.count)
-  paintMergedTable(merged, table, grouping, [1, 3, 2, 2, 5])
+  const merged = new Uint8ClampedArray(grouping.count * 4)
+  paintMerged(merged, table.bytes, grouping, [1, 3, 2, 2, 5])
   const mean = (members: number[], weights: number[], k: number) =>
     members.reduce((sum, i, m) => sum + weights[m] * table.bytes[i * 4 + k], 0) / weights.reduce((a, b) => a + b, 0)
   for (let k = 0; k < 4; k++) {
-    assert.equal(merged.bytes[k], Math.round(mean([0, 1], [1, 3], k)))
-    assert.equal(merged.bytes[4 + k], Math.round(mean([2, 3], [2, 2], k)))
-    assert.equal(merged.bytes[8 + k], table.bytes[4 * 4 + k])
+    assert.equal(merged[k], Math.round(mean([0, 1], [1, 3], k)))
+    assert.equal(merged[4 + k], Math.round(mean([2, 3], [2, 2], k)))
+    assert.equal(merged[8 + k], table.bytes[4 * 4 + k])
   }
   // A carbon and a nitrogen at weights 2 and 2 give the mean of the two colours, and the out-of-focus pair keeps Fade
   assert.equal(shown[2].element, 'N')
-  assert.equal(merged.bytes[3], 38)
-  assert.equal(merged.bytes[7], 255)
-  assert.equal(merged.texture.version, 1)
-  paintMergedTable(merged, table, grouping, [1, 1, 1, 1, 1])
-  assert.equal(merged.texture.version, 2)
+  assert.equal(merged[3], 38)
+  assert.equal(merged[7], 255)
 })

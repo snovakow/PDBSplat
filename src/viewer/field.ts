@@ -2,7 +2,6 @@ import { Data3DTexture, LinearFilter, RedFormat, RGBAFormat, UnsignedByteType, V
 import {
   abs,
   Break,
-  cameraNear,
   cameraPosition,
   clamp,
   exp,
@@ -31,7 +30,7 @@ import {
 import type { NodeMaterial } from 'three/webgpu'
 import type { PackedField } from '../surface/gaussianSurface.ts'
 import { atomIndexOf, atomTexelAt, createAtomTable, type AtomTable } from './atomTable.ts'
-import { cueFar, cueNear, depthCue, optionUniforms } from './shading.ts'
+import { cueFar, cueNear, cutDepth, depthCue, optionUniforms } from './shading.ts'
 
 // The field: the atoms' density, sampled on a grid by the surface's worker and packed into two 3D textures, drawn as
 // a cloud by a ray march through the box the grid fills. Each pixel of the box's back face casts a ray from the camera
@@ -95,10 +94,10 @@ export function fieldMarch(): FieldMarch {
     const toHigh = origin.add(extent).sub(cameraPosition).div(nudged)
     const nearer = min(toLow, toHigh)
     const entry = max(max(nearer.x, nearer.y), nearer.z)
-    // Where it crosses the near plane, so that Clip cuts the cloud as it cuts the surface: the fragment's view depth
-    // is the ray's at its end, and depth grows evenly along it
+    // Where it crosses the cut, the view depth nothing is drawn nearer than, so that Clip cuts the cloud as it cuts
+    // every style: the fragment's view depth is the ray's at its end, and depth grows evenly along it
     const endDepth = positionView.z.negate().toVar()
-    const nearCrossing = end.mul(cameraNear).div(endDepth)
+    const nearCrossing = end.mul(cutDepth).div(endDepth)
     // The march starts at the later of the two, its first step offset by a share of a step from a hash of the pixel's
     // place, which trades the bands that equal steps draw for fine noise
     const stepLength = spacing.mul(stepShare).toVar()

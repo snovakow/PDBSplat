@@ -1,6 +1,5 @@
 import { DataTexture, RGBAFormat, UnsignedByteType } from 'three'
-import { writeColorBytes } from 'three/addons/utils/GaussianSplatUtils.js'
-import { dot, int, ivec2, round, textureLoad, uniform, varyingProperty, vec3 } from 'three/tsl'
+import { dot, int, ivec2, round, vec3 } from 'three/tsl'
 import type { Node, TextureNode } from 'three/webgpu'
 import type { ColorBy, Conformations, Focus } from '../options.ts'
 import type { Atom } from '../pdb/mmcif.ts'
@@ -8,28 +7,28 @@ import { atomColors } from './atomColors.ts'
 import { focusTest } from './focus.ts'
 import type { Grouping } from './levels.ts'
 
-// The atom table: each shown atom's colour and alpha, four bytes per atom in splat-index order, in a texture the
-// splats' shaders read by the atom's index, which the splat's own colour bytes carry. A splat's bytes are copied into
-// its storage when it's built and have no update path, so a new colouring, Burial, Focus, Fade or pick rewrites the
-// table in place instead, and needn't rebuild a splat
+// The atoms' paint: each shown atom's colour and alpha, four bytes per atom in the order they're shown. The ellipsoids
+// take it as an attribute of their instances, and the field as a table, a texture its march reads by the index of the
+// atom that owns each point. A new colouring, Burial, Focus, Fade or pick rewrites the bytes in place, and rebuilds
+// nothing
 
 const bytesPerAtom = 4
-// A byte's range: an index is written as three bytes, the red the low, the green the middle and the blue the high,
-// so it's exact to 2²⁴ atoms
+// A byte's range: the field writes an owner's index as three bytes, the red the low, the green the middle and the blue
+// the high, so it's exact to 2²⁴ atoms
 const byteRange = 256
 const fullByte = byteRange - 1
 
 export interface AtomTable {
   texture: DataTexture
-  // The texture's bytes, which clamp and round what's written as the splats' own colour bytes do
+  // The texture's bytes, which clamp and round what's written
   bytes: Uint8ClampedArray
   // How many atoms it holds, in its first texels
   count: number
 }
 
-// What the table is painted from: the shown atoms and the entry they're from, Colour by and Burial, Focus with the
-// picked focus's key and Fade, the model shown, or null for every model at once, with how many the entry has, and
-// Alternates
+// What the atoms are painted from: the shown atoms and the entry they're from, Colour by and Burial, Focus with the
+// picked focus's key and Fade, the model shown, or null for every model at once, with how many the entry has,
+// Alternates, and whether what's painted is drawn in layers
 export interface TablePaint {
   shown: readonly Atom[]
   entry: readonly Atom[]
@@ -41,6 +40,7 @@ export interface TablePaint {
   model: number | null
   modelCount: number
   conformations: Conformations
+  layered: boolean
 }
 
 // The table is as wide as the square root of the atom count rounded up, and as tall as it then needs; an empty one
@@ -58,30 +58,23 @@ export function createAtomTable(count: number): AtomTable {
   return { texture: new DataTexture(bytes, width, height, RGBAFormat, UnsignedByteType), bytes, count }
 }
 
-// Writes an atom's index into its splat's colour bytes, with a full alpha, so that three's raycast never skips it
-export function writeAtomIndex(target: Uint8ClampedArray, offset: number, index: number) {
-  const low = index % byteRange
-  const middle = Math.floor(index / byteRange) % byteRange
-  const high = Math.floor(index / (byteRange * byteRange))
-  writeColorBytes(target, offset, low, middle, high, fullByte)
-}
-
 // The index the bytes at an offset carry
 export function readAtomIndex(source: Uint8ClampedArray, offset: number) {
   return source[offset] + source[offset + 1] * byteRange + source[offset + 2] * byteRange * byteRange
 }
 
-// Paints every shown atom's texel: its colour from the colouring, darkened by Burial, and its alpha from what fades it.
-// An atom in focus has a full alpha, and one out of focus Fade's share of it. Every model drawn at once overlaps the
-// others, so each atom then keeps one over the square root of the number of models, and an atom in one of several
-// conformations keeps its occupancy's share while they're all drawn. Only an alternate's occupancy fades it: an atom
-// without one may be given less than 1, and is still drawn whole. Opacity acts through the shading's uniform, so it
-// isn't here
-export function paintAtomTable({ texture: table, bytes }: AtomTable, paint: TablePaint) {
-  const { shown, entry, colorBy, burial, focus, picked, fade, model, modelCount, conformations } = paint
+// Paints every shown atom's four bytes: its colour from the colouring, darkened by Burial, and its alpha from what
+// fades it. An atom in focus has a full alpha, and one out of focus Fade's share of it. Every model drawn at once
+// overlaps the others, so each atom then keeps one over the square root of the number of models, where the atoms are
+// summed or glow; layered, only the nearest see-through surface shows, which no number of models adds to, so each
+// model's atoms stay whole. An atom in one of several conformations keeps its occupancy's share while they're all
+// drawn. Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn
+// whole. Opacity acts through the shading's uniform, so it isn't here
+export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint) {
+  const { shown, entry, colorBy, burial, focus, picked, fade, model, modelCount, conformations, layered } = paint
   const rgb = atomColors(shown, colorBy, entry, burial)
   const inFocus = focusTest(entry, focus, picked)
-  const modelShare = model === null ? 1 / Math.sqrt(modelCount) : 1
+  const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
   shown.forEach((atom, i) => {
     const focusShare = !inFocus || inFocus(atom) ? 1 : fade
     const occupancyShare = conformations === 'all' && atom.altLoc !== '' ? atom.occupancy : 1
@@ -89,17 +82,25 @@ export function paintAtomTable({ texture: table, bytes }: AtomTable, paint: Tabl
     const r = rgb[i * 3] * fullByte
     const g = rgb[i * 3 + 1] * fullByte
     const b = rgb[i * 3 + 2] * fullByte
-    writeColorBytes(bytes, i * bytesPerAtom, r, g, b, alpha)
+    bytes[i * bytesPerAtom] = r
+    bytes[i * bytesPerAtom + 1] = g
+    bytes[i * bytesPerAtom + 2] = b
+    bytes[i * bytesPerAtom + 3] = alpha
   })
+}
+
+// Paints a table's bytes, and has its texture sent again
+export function paintAtomTable({ texture: table, bytes }: AtomTable, paint: TablePaint) {
+  paintAtoms(bytes, paint)
   table.needsUpdate = true
 }
 
-// Paints a merged level's table from the atom table its members are painted in: each group's texel is the weighted
-// mean of its members' colours and alphas, by the weights the Gaussians were merged with, so that a blob takes the
+// Paints a merged level's groups from the bytes its members are painted in: each group's four bytes are the weighted
+// mean of its members' colours and alphas, by the weights the ellipsoids were merged with, so that a blob takes the
 // colour of the atoms it stands for and fades as they do
-export function paintMergedTable(
-  { texture: table, bytes }: AtomTable,
-  source: AtomTable,
+export function paintMerged(
+  bytes: Uint8ClampedArray,
+  source: Uint8ClampedArray,
   { groups, count }: Grouping,
   weights: ArrayLike<number>,
 ) {
@@ -109,22 +110,21 @@ export function paintMergedTable(
     const group = groups[i]
     const weight = weights[i]
     totals[group] += weight
-    for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source.bytes[i * bytesPerAtom + k]
+    for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source[i * bytesPerAtom + k]
   }
   for (let group = 0; group < count; group++) {
     const offset = group * bytesPerAtom
     const total = totals[group]
-    writeColorBytes(bytes, offset, sums[offset] / total, sums[offset + 1] / total, sums[offset + 2] / total, sums[offset + 3] / total)
+    for (let k = 0; k < bytesPerAtom; k++) bytes[offset + k] = sums[offset + k] / total
   }
-  table.needsUpdate = true
 }
 
-// three's raycast skips a splat whose alpha is below this share of full. It reads the splat's own bytes, whose alpha
-// is always full, so the pick applies the same rule to the table's alpha, and atoms faded far out of focus stay
-// unpickable
+// The least share of a full alpha an atom can be picked at, so that the pointer passes through atoms faded far out of
+// focus to what's behind them
 export const minPickOpacity = 0.2
 
-export function isPickable({ bytes }: AtomTable, index: number) {
+// Whether the atom at a place in the paint can be picked
+export function isPickable(bytes: Uint8ClampedArray, index: number) {
   return bytes[index * bytesPerAtom + 3] / fullByte >= minPickOpacity
 }
 
@@ -134,12 +134,6 @@ export function atomIndexOf(rgb: Node<'vec3'>) {
   return int(dot(round(rgb.mul(fullByte)), vec3(1, byteRange, byteRange * byteRange)))
 }
 
-// The splat's colour varying, three's own, which carries the index bytes: three clamps it to 0–1 and the quad's four
-// corners carry one value, so each channel rounds back to its byte
-const splatColor = varyingProperty('vec4', 'vSplatColor')
-// The splat's atom's index, as its colour bytes carry it
-export const atomIndex = atomIndexOf(splatColor.rgb)
-
 // The read of an atom's texel from a table, by the atom's index: its row is the index over the table's width, and its
 // column the rest. The read follows the table node's texture and the width's value, so that another table can be
 // swapped in by setting both
@@ -147,10 +141,4 @@ export function atomTexelAt(table: TextureNode, width: Node<'int'>, index: Node<
   const i = index.toVar()
   const row = i.div(width).toVar()
   return table.load(ivec2(i.sub(row.mul(width)), row))
-}
-
-// The read of the splat's atom's texel, by the index its colour bytes carry. The width is a uniform set once, so that
-// every table reads through the same shader
-export function atomTexel({ texture: table }: AtomTable) {
-  return atomTexelAt(textureLoad(table), uniform(table.image.width, 'int'), atomIndex)
 }

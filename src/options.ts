@@ -2,19 +2,20 @@ import type { Style, StyleKind } from './viewer/styles.ts'
 
 // The view options, what the panel sets and the scene draws, in one table that the store's defaults and the panel's
 // controls are both built from. Each entry gives the panel folder it sits in, its label, its default, its range and
-// step or its choices by their labels or that it's a switch, which styles show it, and, where another control hides it,
-// the test on that control's value. The entries are in the panel's order.
-// This module imports nothing at run time: the shading reads the defaults as it loads, and the styles are built from
-// the shading, so a table that read the styles would close a cycle
+// step or its choices by their labels or that it's a switch, which styles show it, and, where another control or what's
+// drawn would leave it nothing to change, the test it shows by, so that the panel never offers a control that draws
+// the same picture wherever it's set. The entries are in the panel's order.
+// This module imports nothing at run time: the shading reads the defaults as it loads, so a table that read anything
+// built on the shading would close a cycle
 
 export type ColorBy = 'element' | 'chain' | 'bfactor' | 'rainbow' | 'structure'
 
 // Which atoms the splat styles keep in focus, fading the rest: residue and chain keep the picked atom's
 export type Focus = 'all' | 'ligands' | 'backbone' | 'residue' | 'chain'
 
-// How the splat styles lay splats over one another: in front of what's behind, or added to it so dense parts glow, or
-// summed by how near and how opaque each is, so that the order they're drawn in never matters
-export type Blend = 'normal' | 'glow' | 'weighted'
+// How the soft splats are laid over one another: summed, by how near and how opaque each is, or added to what's behind
+// so dense parts glow. Neither depends on the order the splats are drawn in, so nothing flips as the view turns
+export type Blend = 'normal' | 'glow'
 
 // Which level of detail the splat styles draw: the atoms, one Gaussian per residue or per chain, or whichever is still
 // a few pixels across at the view's distance
@@ -32,12 +33,28 @@ export type Folder = 'Look' | 'Colour' | 'Atoms' | 'Scene'
 // Which styles show a control: every style, the styles of one kind, or the styles named
 export type ShownFor = 'every' | { kind: StyleKind } | { styles: readonly Style[] }
 
-// Another control that hides this one, by its key in the table: this one shows only while that control's value is
-// the one given, isn't it, or is above it
+// What an entry holds that a control acts on: more than one model, residues recorded in more than one conformation,
+// waters, and hydrogens
+export interface EntryHolds {
+  models: boolean
+  alternates: boolean
+  waters: boolean
+  hydrogens: boolean
+}
+
+// An entry that holds all of them, for which no control hides by the entry
+export const wholeEntry: EntryHolds = { models: true, alternates: true, waters: true, hydrogens: true }
+
+// What hides a control. Another control, by its key in the table: this one shows only while that control shows and its
+// value is the one given, isn't it, or is above it. Or what's drawn: this one shows only while everything drawn hides
+// what's behind it, or only while something drawn is see-through. Or the entry: this one shows only while the entry
+// holds what it acts on
 export type Dependence =
   | { option: string; is: boolean }
   | { option: string; isNot: string }
   | { option: string; above: number }
+  | { opaque: boolean }
+  | { entryHolds: keyof EntryHolds }
 
 interface Control<T> {
   folder: Folder
@@ -78,7 +95,6 @@ const styleChoice = (entry: Omit<StyleChoice, 'kind'>): StyleChoice => ({ kind: 
 const every: ShownFor = 'every'
 const splats: ShownFor = { kind: 'splats' }
 const soft: ShownFor = { styles: ['soft'] }
-const spheres: ShownFor = { styles: ['spheres'] }
 const spheresAndSurface: ShownFor = { styles: ['spheres', 'surface'] }
 const surfaceAndField: ShownFor = { styles: ['surface', 'field'] }
 
@@ -94,8 +110,8 @@ const aoRadiusDefault = 4
 // The defaults are the page's opening look, set together and chosen by eye on haemoglobin, the entry the page opens on,
 // to show a structure at its most striking: solid, glossy spheres in their chains' colours, their buried atoms and the
 // far side of the structure in shadow, ambient occlusion in the contacts between them, and a glow around their
-// brightest highlights, over the page's black. Opacity starts at full, as the spheres are solid only there, and
-// ambient occlusion acts on them only while they're solid
+// brightest highlights, over the page's black, turning slowly so that its depth shows as it moves. Opacity starts at
+// full, as the spheres are solid only there, and ambient occlusion acts on them only while they're solid
 export const viewOptions = {
   style: styleChoice({ folder: 'Look', label: 'Style', default: 'spheres', shownFor: every }),
   // The surface and field styles' grid points per ångström: higher meshes or samples more finely, and more slowly
@@ -110,25 +126,69 @@ export const viewOptions = {
   }),
   // Times each atom's van der Waals radius
   scale: slider({ folder: 'Look', label: 'Size', default: 1, min: 0.25, max: 2, step: 0.05, shownFor: every }),
-  opacity: slider({ folder: 'Look', label: 'Opacity', default: 1, min: 0, max: 1, step: 0.05, shownFor: every }),
-  // Below full Opacity, the far side of the spheres' union, or of the surface, drawn under the near side, so that the
-  // structure reads as hollow glass. At full Opacity the far side is hidden, and the switch draws nothing
-  backShell: toggle({ folder: 'Look', label: 'Back shell', default: false, shownFor: spheresAndSurface }),
-  // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1. Spheres always keep a hard edge
+  // Opacity stops short of 0, where nothing would be drawn whatever else was set
+  opacity: slider({ folder: 'Look', label: 'Opacity', default: 1, min: 0.05, max: 1, step: 0.05, shownFor: every }),
+  // The far side of the see-through spheres, or of the surface below full Opacity, drawn under the near side, so that
+  // the structure reads as hollow glass. Where everything drawn is opaque the far side is hidden, so the switch shows
+  // only while something is see-through
+  backShell: toggle({
+    folder: 'Look',
+    label: 'Back shell',
+    default: false,
+    shownFor: spheresAndSurface,
+    shownWhile: { opaque: false },
+  }),
+  // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1
   hardness: slider({ folder: 'Look', label: 'Hardness', default: 0, min: 0, max: 1, step: 0.05, shownFor: soft }),
-  // The spheres style's lighting: how much the shade falls off towards the rim, the highlight's strength,
-  // how tight the highlight is, and the width of an ink rim, as a fraction of each sphere's radius
-  shading: slider({ folder: 'Look', label: 'Shading', default: 0.75, min: 0, max: 1, step: 0.05, shownFor: spheres }),
-  highlight: slider({ folder: 'Look', label: 'Highlight', default: 0.7, min: 0, max: 1, step: 0.05, shownFor: spheres }),
-  shininess: slider({ folder: 'Look', label: 'Shininess', default: 40, min: 1, max: 64, step: 1, shownFor: spheres }),
-  outline: slider({ folder: 'Look', label: 'Outline', default: 0, min: 0, max: 0.3, step: 0.01, shownFor: spheres }),
-  // Blending acts on splats, so the surface leaves it out
+  // The lighting of the spheres and the surface, which is one: how much the shade falls off where a surface turns
+  // from the viewer, the highlight's strength, how tight the highlight is, and the width of an ink rim where it turns
+  // edge on, as a fraction of a sphere's radius. With no highlight there's nothing to tighten, so Shininess shows only
+  // while Highlight is above 0
+  shading: slider({
+    folder: 'Look',
+    label: 'Shading',
+    default: 0.75,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    shownFor: spheresAndSurface,
+  }),
+  highlight: slider({
+    folder: 'Look',
+    label: 'Highlight',
+    default: 0.7,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    shownFor: spheresAndSurface,
+  }),
+  shininess: slider({
+    folder: 'Look',
+    label: 'Shininess',
+    default: 40,
+    min: 1,
+    max: 64,
+    step: 1,
+    shownFor: spheresAndSurface,
+    shownWhile: { option: 'highlight', above: 0 },
+  }),
+  outline: slider({
+    folder: 'Look',
+    label: 'Outline',
+    default: 0,
+    min: 0,
+    max: 0.3,
+    step: 0.01,
+    shownFor: spheresAndSurface,
+  }),
+  // Blending is the soft splats' alone. The spheres are always layered by their surfaces' depths: summed or glowing
+  // they'd be discs, which the soft splats already are at full Hardness
   blend: choice<Blend>({
     folder: 'Look',
     label: 'Blend',
     default: 'normal',
-    choices: { normal: 'normal', glow: 'glow', weighted: 'weighted' },
-    shownFor: splats,
+    choices: { normal: 'normal', glow: 'glow' },
+    shownFor: soft,
   }),
   // The atoms merged into one blob per residue or per chain, or the atoms themselves, or whichever is still a few
   // pixels across as the view zooms, which the surface leaves out
@@ -148,16 +208,30 @@ export const viewOptions = {
   }),
   // How far buried atoms darken, from none at 0 to black for the most buried at 1
   burial: slider({ folder: 'Colour', label: 'Burial', default: 0.5, min: 0, max: 1, step: 0.05, shownFor: every }),
-  hydrogens: toggle({ folder: 'Atoms', label: 'Hydrogens', default: true, shownFor: every }),
-  waters: toggle({ folder: 'Atoms', label: 'Waters', default: false, shownFor: every }),
-  // An NMR entry's models, and the alternate conformations some residues have, in every style. An entry with one
-  // model, or no alternates, shows the same atoms for each choice
+  // The four that choose which atoms are shown, in every style: the hydrogens, the waters, an NMR entry's models, and
+  // the alternate conformations some residues have. Each shows only for an entry that holds what it chooses among,
+  // as it would otherwise show the same atoms however it was set
+  hydrogens: toggle({
+    folder: 'Atoms',
+    label: 'Hydrogens',
+    default: true,
+    shownFor: every,
+    shownWhile: { entryHolds: 'hydrogens' },
+  }),
+  waters: toggle({
+    folder: 'Atoms',
+    label: 'Waters',
+    default: false,
+    shownFor: every,
+    shownWhile: { entryHolds: 'waters' },
+  }),
   models: choice<Models>({
     folder: 'Atoms',
     label: 'Models',
     default: 'first',
     choices: { first: 'first', all: 'all', play: 'play' },
     shownFor: every,
+    shownWhile: { entryHolds: 'models' },
   }),
   conformations: choice<Conformations>({
     folder: 'Atoms',
@@ -165,6 +239,7 @@ export const viewOptions = {
     default: 'first',
     choices: { first: 'first', all: 'all' },
     shownFor: every,
+    shownWhile: { entryHolds: 'alternates' },
   }),
   // Thermal, Ellipsoids, Focus and Fade act on splats, so the surface leaves them out. Thermal is how far each splat
   // spreads with its atom's thermal motion, as a multiple of the variance its B-factor gives. An ellipsoid is drawn
@@ -188,21 +263,27 @@ export const viewOptions = {
     choices: { all: 'all', ligands: 'ligands', backbone: 'backbone', 'picked residue': 'residue', 'picked chain': 'chain' },
     shownFor: splats,
   }),
-  // What an atom out of focus keeps of its alpha
+  // What an atom out of focus keeps of its alpha, down to none at 0, where it's hidden. It stops short of 1, where
+  // nothing would fade, as with every atom in focus
   fade: slider({
     folder: 'Atoms',
     label: 'Fade',
     default: 0.15,
     min: 0,
-    max: 1,
+    max: 0.95,
     step: 0.05,
     shownFor: splats,
     shownWhile: { option: 'focus', isNot: 'all' },
   }),
+  // Turns the structure slowly about its y axis, upright as it's framed, by orbiting the camera round it, and holds the
+  // turn while a drag moves the view. It moves the view without changing how anything is drawn, so a preset leaves it
+  // as it is
+  spin: toggle({ folder: 'Scene', label: 'Spin', default: true, shownFor: every }),
   // How far the far side of the structure darkens, from none at 0 to black at 1
   depthCue: slider({ folder: 'Scene', label: 'Depth cue', default: 0.85, min: 0, max: 1, step: 0.05, shownFor: every }),
-  // How far the near plane cuts into the structure from its front, from none at 0 to all of it at 1
-  clip: slider({ folder: 'Scene', label: 'Clip', default: 0, min: 0, max: 1, step: 0.05, shownFor: every }),
+  // How far the cut reaches into the structure from its front, from none at 0. It stops short of 1, where it would
+  // cut all of it away
+  clip: slider({ folder: 'Scene', label: 'Clip', default: 0, min: 0, max: 0.95, step: 0.05, shownFor: every }),
   // The strength of a glow spread around bright parts of the scene, how far it spreads, from 0 to 1, and the
   // brightness, from 0 to 1, below which nothing glows. The spread and threshold matter only while it's on, and show
   // just below it, each named for it as the occlusion's radius is for AO
@@ -229,9 +310,18 @@ export const viewOptions = {
   }),
   // How far ambient occlusion darkens the crevices of solid spheres or an opaque surface, from none at 0 to all of it
   // at 1, and how far around each point it looks for what shades it, in ångströms. It reads the depth of what's in
-  // view, so it needs everything opaque: the spheres while they're solid, or the surface at full Opacity. The soft
-  // splats are never opaque
-  ao: slider({ folder: 'Scene', label: 'AO', default: 1, min: 0, max: 1, step: 0.05, shownFor: spheresAndSurface }),
+  // view, so it needs everything opaque: the spheres while none of them is see-through, or the surface at full
+  // Opacity. The soft splats are never opaque. It shows only while it acts, and its radius only while it does
+  ao: slider({
+    folder: 'Scene',
+    label: 'AO',
+    default: 1,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    shownFor: spheresAndSurface,
+    shownWhile: { opaque: true },
+  }),
   aoRadius: slider({
     folder: 'Scene',
     label: 'AO radius',
@@ -279,6 +369,7 @@ export const defaultOptions: ViewOptions = {
   ellipsoids: viewOptions.ellipsoids.default,
   focus: viewOptions.focus.default,
   fade: viewOptions.fade.default,
+  spin: viewOptions.spin.default,
   depthCue: viewOptions.depthCue.default,
   clip: viewOptions.clip.default,
   bloom: viewOptions.bloom.default,

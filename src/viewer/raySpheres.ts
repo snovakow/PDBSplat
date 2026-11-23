@@ -1,9 +1,9 @@
 import { Vector3, type Camera, type Ray } from 'three'
-import { beyondNear } from './nearPlane.ts'
+import { beyondCut } from './nearPlane.ts'
 
-// The nearest of a set of spheres along a ray, which the surface style picks its atoms by, and the splat styles while
-// Detail draws residues or chains alone: meshes are far too many triangles to test as the pointer moves, and a blob
-// stands for a whole residue or chain, so each atom's sphere stands for its part of what's drawn
+// The nearest of a set of spheres along a ray, which the surface and the field pick their atoms by: a mesh is far too
+// many triangles to test as the pointer moves, and a cloud has no surface to test, so each atom's sphere stands for its
+// part of what's drawn
 
 export interface SphereHit {
   // The sphere's place in the list, or -1 when the ray meets none
@@ -14,7 +14,7 @@ export interface SphereHit {
 
 const point = new Vector3()
 
-// Writes into hit the sphere the ray enters first, among those it enters beyond the camera's near plane, which may cut
+// Writes into hit the sphere the ray enters first, among those it enters beyond the cut, which may take
 // a sphere's front away, and, where a test is given, among those it accepts by their place in the list: the ray passes
 // through the rest. Centres are x, y, z triples, and the ray's direction has unit length
 export function nearestSphere(
@@ -42,7 +42,7 @@ export function nearestSphere(
     const t = -b - root >= 0 ? -b - root : -b + root
     if (t < 0 || t >= hit.distance) continue
     if (accepts?.(i) === false) continue
-    if (!beyondNear(ray.at(t, point), camera)) continue
+    if (!beyondCut(ray.at(t, point), camera)) continue
     hit.index = i
     hit.distance = t
   }

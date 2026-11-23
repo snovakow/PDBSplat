@@ -1,53 +1,58 @@
 import {
   abs,
+  attribute,
   cameraFar,
   cameraNear,
   cameraViewMatrix,
-  dFdx,
-  dFdy,
+  clamp,
+  context,
   Discard,
   dot,
   exp,
   float,
   Fn,
+  fwidth,
   If,
-  length,
   max,
   mix,
   normalize,
+  normalView,
   positionView,
   pow,
   renderGroup,
+  select,
   smoothstep,
   sqrt,
   uniform,
-  varyingProperty,
-  vec2,
-  vec3,
   vec4,
   viewZToPerspectiveDepth,
 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 import { defaultOptions, type ViewOptions } from '../options.ts'
+import {
+  ellipsoidDepth,
+  ellipsoidDimming,
+  ellipsoidPaint,
+  ellipsoidPassage,
+  ellipsoidReach,
+  rayDirection,
+  type Passage,
+} from './ellipsoid.ts'
 
-// The splat styles' colour nodes, which replace GaussianSplat's own, and the depth cue every style shares.
-// Each is built on the read of its atom's texel from the atom table: the texel's rgb is the atom's colour, and its
-// alpha carries Fade, the models' share and an alternate's occupancy. They read the splat's own varyings by name: its
-// position across the splat, in standard deviations, and its colour, whose bytes carry the atom's index and whose
-// alpha is then three's antialiasing compensation alone.
-// three cuts splats off at two standard deviations, so each style's edge is where the soft splat's is
-const splatUv = varyingProperty('vec2', 'vSplatUv')
-const splatColor = varyingProperty('vec4', 'vSplatColor')
+// How everything is shaded: the soft style's density, the lit surface of the spheres style's ellipsoids, in its
+// layers, and of the surface style's mesh, and the depth cue and Clip's cut, which every style shares. An ellipsoid's
+// shading reads the pixel's ellipsoid: its paint, whose rgb is the atom's colour and whose alpha carries Fade, the
+// models' share and an alternate's occupancy, and where the pixel's ray passes it
 
-// A splat style's colour node, built on the read of its atom's texel
-export type SplatShading = (texel: Node<'vec4'>) => NonNullable<NodeMaterial['colorNode']>
+// A material's colour node
+type ColorNode = NonNullable<NodeMaterial['colorNode']>
 
 // A uniform three refreshes on every render for every material. One in an object's own group refreshes only when
-// that object's material or transform changes, so the surface's plain material would miss a new value through fog
+// that object's material or transform changes, and would miss a slider's new value
 const sharedUniform = (value: number) => uniform(value).setGroup(renderGroup)
 
 // The panel's shading options, by their names in the view options, which the scene copies in as they change,
-// so a slider never rebuilds the splats
+// so a slider never rebuilds what's drawn
 export const optionUniforms = {
   opacity: sharedUniform(defaultOptions.opacity),
   hardness: sharedUniform(defaultOptions.hardness),
@@ -64,7 +69,7 @@ export const structureRadius = sharedUniform(0)
 
 // How far Hardness 1 sharpens the soft falloff: its exponent runs from 1, a Gaussian, to this
 const hardestExponent = 16
-// The width of the ink rim's inner fade, as a fraction of the sphere's radius
+// The width of the ink rim's inner fade, as a fraction of a sphere's radius
 const inkFade = 0.02
 // smoothstep is undefined when its edges meet, so the depth cue spans at least this, in ångströms, before an entry loads
 const minimumSpan = 0.001
@@ -76,125 +81,187 @@ const span = max(structureRadius, minimumSpan)
 export const cueNear = centreDepth.sub(span)
 export const cueFar = centreDepth.add(span)
 
-// What the depth cue leaves of a splat's colour, from 1 at the structure's nearest point to 1 − Depth cue at its farthest.
-// Every pixel of a splat has its centre's view depth, as three rebuilds the fragment's position from a clip position
-// whose depth all four corners share
-const depthShade = float(1).sub(depthCue.mul(smoothstep(cueNear, cueFar, positionView.z.negate())))
+// What the depth cue leaves of a colour at a view depth, from all of it at the structure's nearest point to 1 − Depth
+// cue at its farthest
+export function depthShade(depth: Node<'float'>) {
+  return float(1).sub(depthCue.mul(smoothstep(cueNear, cueFar, depth)))
+}
 
-// A soft Gaussian falloff, as three's own colour node draws it, which Hardness sharpens into a flat disc
-export const softColor: SplatShading = (texel) =>
-  Fn(() => {
-    const r2 = dot(splatUv, splatUv).toVar()
-    If(r2.greaterThan(4), () => {
+// The view depth of Clip's cut, which the scene copies in, or 0 while nothing is cut. Every style takes the cut pixel
+// by pixel, in its own shader, and the camera's near plane stays where framing put it
+export const clipDepth = sharedUniform(0)
+// The view depth nothing is drawn nearer than: the cut, or the camera's near plane where that's farther
+export const cutDepth = max(clipDepth, cameraNear)
+// How far along the pixel's ray that is
+const cutAlong = cutDepth.div(rayDirection.z.negate())
+// Whether a mesh's pixel lies beyond the cut, which its material takes as its mask, so that the mesh opens where
+// it's cut
+export const cutMask = positionView.z.negate().greaterThanEqual(clipDepth)
+
+// A mesh drawn more than once, as depth alone and then as colour, must land on the same depth each time, or the colour
+// fails its test against its own depth in specks that change with every move of the view. A material given this
+// context has its vertices placed alike by every shader, which the compiler is otherwise free not to do
+export const samePlacement = context({ invariant: true })
+// How far either side of the cut a Gaussian fades across, in ångströms, about an atom's radius: it has no surface to
+// cut along, so it fades out as its centre comes through the cut instead
+const cutBand = 1.5
+// What the cut leaves of a Gaussian: all of it behind the band, and none in front
+const cutFade = smoothstep(clipDepth.sub(cutBand), clipDepth.add(cutBand), ellipsoidDepth)
+
+// The least width of a pixel to divide by, as a share of an ellipsoid's radius
+const leastPixel = 1e-6
+
+// How much of the pixel an ellipsoid's edge covers, by how far out the pixel's ray passes: all of it a pixel inside
+// the outline, and none at the outline, so that the edge is a pixel's fade at any size. It reads how fast its input
+// changes across the screen, which a shader may ask only before it discards anything
+function coverage(out: Node<'float'>) {
+  const radius = sqrt(out).toVar()
+  return clamp(float(1).sub(radius).div(max(fwidth(radius), leastPixel)), 0, 1)
+}
+
+// The soft style: a Gaussian's density along the pixel's ray, which Hardness sharpens into a flat disc. It's dimmed
+// by what its widening took, and shaded by the depth cue at its centre
+export const softColor: ColorNode = Fn(() => {
+  // From 0 through the centre to 1 at the edge, two standard deviations out
+  const out = ellipsoidReach.toVar()
+  const edge = coverage(out).toVar()
+  If(out.greaterThan(1), () => {
+    Discard()
+  })
+  const falloff = exp(pow(out, pow(hardestExponent, hardness)).mul(-2))
+  // A hard disc's rim is the edge's fade, and a Gaussian has faded out before it
+  const rim = mix(1, edge, hardness)
+  const alpha = falloff.mul(ellipsoidPaint.a).mul(ellipsoidDimming).mul(opacity).mul(rim).mul(cutFade)
+  return vec4(ellipsoidPaint.rgb.mul(depthShade(ellipsoidDepth)), alpha)
+})()
+
+// A surface's colour under the pixel, from its atom's colour and how directly it faces the viewer, from 1 to 0 where
+// it turns edge on: shaded by its facing, with its highlight and its ink rim. The light comes from the viewer, so the
+// side in view is always lit, and every surface, an ellipsoid's or the mesh's, is lit the same
+function lit(colour: Node<'vec3'>, facing: Node<'float'>) {
+  const shade = facing.mul(shading).add(shading.oneMinus())
+  const glint = pow(facing, shininess).mul(highlight)
+  const rgb = colour.mul(shade).add(glint).toVar()
+  // Outline inks the part of a surface that turns furthest from the viewer black, and at 0 leaves the colour
+  // untouched. On a sphere that's the outermost part of its radius, which is the sine of the angle its facing is the
+  // cosine of
+  If(outline.greaterThan(0), () => {
+    const inner = outline.oneMinus()
+    const turned = sqrt(max(facing.mul(facing).oneMinus(), 0))
+    rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, turned).oneMinus())
+  })
+  return rgb
+}
+
+// The surface style's colour: each vertex's colour, lit by how directly the mesh faces the pixel's ray, on either
+// side, with the depth cue at the pixel's own depth
+export const meshColor: ColorNode = Fn(() => {
+  const facing = abs(dot(normalize(normalView), normalize(positionView)))
+  const rgb = lit(attribute('color', 'vec3'), facing)
+  return vec4(rgb.mul(depthShade(positionView.z.negate())), 1)
+})()
+
+// The layers the spheres style draws its ellipsoids in, none of which is sorted, so that nothing flips as the view
+// turns. Each pixel shows the nearest solid surface, under the nearest see-through one in front of it, or, where no
+// solid lies under the pixel, the back shell, the farthest see-through surface, under the nearest see-through one:
+// - solid: the atoms at full alpha, which write their surface's depth and hide what's behind them
+// - ghost: the atoms below full alpha, by Opacity, Fade or an alternate's occupancy, of which only the nearest
+//   surface under each pixel is drawn, blended over what's behind it. Its depth goes first, in ghostDepth, and its
+//   colour then passes only where it's that nearest surface
+// - back: the far side of the see-through atoms, where the pixel's ray leaves the last of them, under the ghost layer,
+//   wherever no solid is drawn. Its depth goes first too, in backDepth
+export type Layer = 'solid' | 'ghost' | 'ghostDepth' | 'back' | 'backDepth'
+
+// The alpha, of the atom's own times Opacity, from which an atom is solid, and the alpha below which it isn't drawn
+// at all, which is half a step of the paint's byte: Fade at 0 hides the atoms out of focus
+const solidAlpha = 0.999
+const leastAlpha = 0.002
+// How bright a cut ellipsoid's flat face is, of its atom's colour
+const capShade = 0.6
+// How much farther a depth layer writes its depth than its colour layer then tests with, so that the colour passes
+// where it's the surface the depth kept, whatever the two shaders' arithmetic rounds to
+const layerGap = 2e-6
+// How far behind the cut a cut face sinks, in ångströms: nothing where the cut passes through its ellipsoid's centre,
+// and this at the ellipsoid's surface. Every ellipsoid the cut crosses would otherwise put its face at the cut's own
+// depth, and which face showed where they overlap would be left to rounding, and change from frame to frame. Sunk by
+// how far out of its ellipsoid each point lies, a point of the cut shows the ellipsoid it lies deepest inside
+const capDish = 0.1
+// The least half-chord to divide by, in ångströms, where a ray passes outside the outline
+const leastChord = 1e-6
+
+// A layer's colour node: the surface's shading where the atom belongs to the layer, and nothing elsewhere. Clip cuts
+// each ellipsoid where it crosses the cut: what's in front goes, and a front layer shows the solid's flat face there,
+// in its atom's colour, so that the cut moves across each atom as the view turns
+function layerColor(layer: Layer, passage: Passage, front: boolean): ColorNode {
+  const depthOnly = layer === 'ghostDepth' || layer === 'backDepth'
+  return Fn(() => {
+    const through = passage.toVar()
+    const edge = coverage(through.z).toVar()
+    If(through.z.greaterThan(1), () => {
       Discard()
     })
-    // From 0 at the centre to 1 at the edge
-    const q = r2.div(4)
-    const falloff = exp(pow(q, pow(hardestExponent, hardness)).mul(-2))
-    // A thin fade at the rim softens a hard disc's stair-steps
-    const rim = mix(1, smoothstep(0.96, 1, q).oneMinus(), hardness)
-    return vec4(texel.rgb.mul(depthShade), falloff.mul(texel.a.mul(splatColor.a)).mul(opacity).mul(rim))
-  })()
-
-// A shaded sphere with a hard edge.
-// Round splats are turned to arbitrary angles, so the light comes from the viewer, which needs no direction on the splat.
-// A solid sphere is drawn whole, so its texel's alpha is full, and it hides what's behind it, so its alpha is the rim's
-// fade alone, which only smooths its edge. A translucent sphere may be cut: its alpha is also multiplied by the cut,
-// 1 where its surface lies under the pixel and 0 where the cut takes it away
-function sphereShading(solid: boolean, cut?: Node<'float'>): SplatShading {
-  return (texel) =>
-    Fn(() => {
-      // From 0 at the centre to 1 at the edge
-      const q = dot(splatUv, splatUv).div(4).toVar()
-      If(q.greaterThan(1), () => {
+    const alpha = ellipsoidPaint.a.mul(opacity).toVar()
+    if (layer === 'solid') {
+      If(alpha.lessThan(solidAlpha), () => {
         Discard()
       })
-      // How directly the sphere's surface faces the viewer, from 1 at the centre to 0 at the edge
-      const facing = sqrt(q.oneMinus()).toVar()
-      const shade = facing.mul(shading).add(shading.oneMinus())
-      const glint = pow(facing, shininess).mul(highlight)
-      const rgb = texel.rgb.mul(shade).add(glint).toVar()
-      // Outline inks the outermost part of the radius black, and at 0 leaves the colour untouched
-      If(outline.greaterThan(0), () => {
-        const inner = outline.oneMinus()
-        rgb.mulAssign(smoothstep(inner.sub(inkFade), inner, sqrt(q)).oneMinus())
+    } else {
+      If(alpha.greaterThanEqual(solidAlpha).or(alpha.lessThan(leastAlpha)), () => {
+        Discard()
       })
-      // A thin fade at the rim softens its stair-steps
-      const edge = smoothstep(0.96, 1, q).oneMinus()
-      const translucent = texel.a.mul(splatColor.a).mul(opacity).mul(edge)
-      return vec4(rgb.mul(depthShade), solid ? edge : cut ? translucent.mul(cut) : translucent)
-    })()
+    }
+    // Wholly in front of the cut under this pixel
+    If(through.y.lessThan(cutAlong), () => {
+      Discard()
+    })
+    // A depth layer writes no colour
+    if (depthOnly) return vec4(0)
+    const rgb = lit(ellipsoidPaint.rgb, through.w).toVar()
+    if (front) {
+      If(through.x.lessThan(cutAlong), () => {
+        rgb.assign(ellipsoidPaint.rgb.mul(capShade))
+      })
+    }
+    // The depth cue is taken at the surface the pixel shows
+    const along = front ? max(through.x, cutAlong) : through.y
+    const shaded = rgb.mul(depthShade(along.mul(rayDirection.z.negate())))
+    // A solid hides what's behind it, so its alpha is its edge's fade alone, which sets how much of each pixel it
+    // covers
+    return vec4(shaded, layer === 'solid' ? edge : alpha.mul(edge))
+  })()
 }
 
-export const sphereColor = sphereShading(false)
-export const solidSphereColor = sphereShading(true)
-// A translucent sphere cut where its surface lies inside its neighbours, by a cut of 1 or 0 under each pixel
-export const cutSphereColor = (cut: Node<'float'>) => sphereShading(false, cut)
-
-// three widens every splat's projected variance by this, in square pixels, so that none is drawn thinner than a pixel
-const screenVariance = 0.3
-// three draws each splat out to two standard deviations, so a sphere's edge is at twice its splat's scale
-const kernelCutoff = 2
-
-// The direction of the pixel's ray from the camera, in view space
-export const rayDirection = normalize(positionView)
-
-// Where the pixel's ray crosses a sphere, from the sphere's centre and radius in view space: how far along the ray the
-// centre lies, and the half-chord from there to either surface, which is 0 where the drawn edge reaches past the
-// sphere, so that the entry and the exit both fall where the ray passes nearest. The discriminant is taken as the radius
-// squared less the ray's miss squared, which keeps its precision at the structure's distance. The nodes are built in
-// place rather than as a shader function: as a function, the compiled arithmetic rounded differently, which moved a
-// few pixels along the solid spheres' creases
-function sphereChord(centre: Node<'vec3'>, radius: Node<'float'>) {
-  const along = dot(rayDirection, centre)
-  const across = centre.sub(rayDirection.mul(along))
-  return { along, half: sqrt(max(radius.mul(radius).sub(dot(across, across)), 0)) }
+// How far along the pixel's ray a layer's surface lies, for its depth: where the ray leaves the ellipsoid for a back
+// layer, and for a front layer where it enters, or its cut face where the cut has taken that. How far out of the
+// ellipsoid a point of the ray lies grows as the square of its distance from the middle of the chord, from how far
+// out the ray passes at the middle to 1 at either end, which sinks the cut face as above
+function surfaceAlong(passage: Passage, front: boolean) {
+  if (!front) return passage.y
+  const half = max(passage.y.sub(passage.x).mul(0.5), leastChord)
+  const fromMiddle = cutAlong.sub(passage.x.add(passage.y).mul(0.5)).div(half)
+  const outAtCut = passage.z.add(passage.z.oneMinus().mul(fromMiddle.mul(fromMiddle)))
+  return select(passage.x.lessThan(cutAlong), cutAlong.add(outAtCut.mul(capDish)), passage.x)
 }
 
-// How far along the pixel's ray it crosses a sphere's surface, as a function of the sphere's centre and radius in view
-// space: its entry or its exit
-export type SphereCrossing = (centre: Node<'vec3'>, radius: Node<'float'>) => Node<'float'>
-
-// How far along the pixel's ray it enters a sphere. The sphere's depth and the cut both build on it
-export const sphereEntry: SphereCrossing = (centre, radius) => {
-  const { along, half } = sphereChord(centre, radius)
-  return along.sub(half)
+// A layer's depth node: the depth of the surface under each pixel, so that solids that meet cut into one another
+// along the curve where they cross. A front layer's is where the pixel's ray enters the ellipsoid, or the cut where
+// that's farther, and a back layer's is where the ray leaves it.
+// While the back shell is drawn, the depth buffer is shared in halves: the back layers write the far half, turned
+// round, so that the usual test, which keeps the nearest, keeps the farthest leaving point instead, and every other
+// layer writes the near half, so that it passes over whatever the back layers left. The solids are drawn before the
+// back layers, in the near half, so the back shell never shows where a solid is drawn, even where the see-through
+// atoms' far side lies in front of it
+function layerDepth(layer: Layer, passage: Passage, front: boolean, halved: boolean): Node<'float'> {
+  const depth = viewZToPerspectiveDepth(surfaceAlong(passage, front).mul(rayDirection.z), cameraNear, cameraFar)
+  const gap = layer === 'ghostDepth' || layer === 'backDepth' ? layerGap : 0
+  if (!front) return depth.mul(0.5).oneMinus().add(gap)
+  return (halved ? depth.mul(0.5) : depth).add(gap)
 }
 
-// How far along the pixel's ray it leaves a sphere: the entry's arithmetic with the half-chord added. The back shell's
-// cut builds on it, and the shading serves the exit as it serves the entry, since how directly the sphere's surface
-// faces the viewer is the same at both
-export const sphereExit: SphereCrossing = (centre, radius) => {
-  const { along, half } = sphereChord(centre, radius)
-  return along.add(half)
+// A layer's colour and depth nodes, on one passage of the pixel's ray: through the near side for a front layer, and
+// the far side for the back shell's. The depth buffer is halved while the back shell is drawn
+export function layerNodes(layer: Layer, halved: boolean) {
+  const front = layer === 'solid' || layer === 'ghost' || layer === 'ghostDepth'
+  const passage = ellipsoidPassage(front ? 'near' : 'far')
+  return { colorNode: layerColor(layer, passage, front), depthNode: layerDepth(layer, passage, front, halved) }
 }
-
-// The depth of a solid sphere's surface under each pixel, so that spheres that meet cut into one another along the
-// curve where they cross. A splat is drawn flat at its centre's depth, so the sphere is found from how the splat's
-// coordinates and the view position change across the screen. Those rates come first, ahead of any discard, as WGSL
-// allows them only where every pixel of a group takes the same path; three builds a material's depth before its colour.
-// Both are rates per screen pixel, so which way the screen's y runs makes no difference
-export const sphereDepth = Fn(() => {
-  const acrossX = dFdx(splatUv).toVar()
-  const acrossY = dFdy(splatUv).toVar()
-  const viewAcrossX = dFdx(positionView.xy).toVar()
-  const viewAcrossY = dFdy(positionView.xy).toVar()
-  // The pixel's view position lies on its ray at the centre's depth, so the centre is that less the pixel's offset
-  // from it: the splat coordinates taken back through their rates give the offset in pixels, and the view position's
-  // rates give it in view units
-  const det = acrossX.x.mul(acrossY.y).sub(acrossX.y.mul(acrossY.x))
-  const pixels = vec2(
-    acrossY.y.mul(splatUv.x).sub(acrossY.x.mul(splatUv.y)),
-    acrossX.x.mul(splatUv.y).sub(acrossX.y.mul(splatUv.x)),
-  ).div(det)
-  const centre = vec3(positionView.xy.sub(viewAcrossX.mul(pixels.x)).sub(viewAcrossY.mul(pixels.y)), positionView.z)
-  // three draws a sphere away from the view's centre stretched towards it but not across it, so the splat's narrowest
-  // scale in pixels, the inverse of its coordinates' steepest rate, holds the true radius once the widening is taken
-  // off, in view units per pixel at the centre's depth
-  const sum = length(vec2(acrossX.x.add(acrossY.y), acrossY.x.sub(acrossX.y)))
-  const difference = length(vec2(acrossX.x.sub(acrossY.y), acrossY.x.add(acrossX.y)))
-  const narrowest = float(2).div(sum.add(difference))
-  const perPixel = sqrt(abs(viewAcrossX.x.mul(viewAcrossY.y).sub(viewAcrossX.y.mul(viewAcrossY.x))))
-  const radius = sqrt(max(narrowest.mul(narrowest).sub(screenVariance), 0)).mul(kernelCutoff).mul(perPixel)
-  return viewZToPerspectiveDepth(sphereEntry(centre, radius).mul(rayDirection.z), cameraNear, cameraFar)
-})()

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { writeCovariance } from 'three/addons/utils/GaussianSplatUtils.js'
+import { writeRound } from '../src/viewer/ellipsoidGeometry.ts'
 import {
   groupBy,
   levelPixels,
@@ -13,17 +13,17 @@ import {
 
 // The levels of detail: the moment-matched merge of Gaussians into groups, the typical drawn diameter and the switch rule
 
-// three draws a splat out to two standard deviations
+// An ellipsoid is drawn out to two standard deviations
 const cutoff = 2
 
 // The covariances are written in single precision
 const tolerance = 1e-6
 
-// Round Gaussians of one standard deviation each at the given centres, in three's covariance order
+// Round Gaussians of one standard deviation each at the given centres
 function round(centers: number[][], sigma = 1) {
   const positions = new Float32Array(centers.flat())
   const covariances = new Float32Array(centers.length * 6)
-  centers.forEach((_, i) => writeCovariance(covariances, i * 6, sigma, sigma, sigma, 0, 0, 0, 1))
+  centers.forEach((_, i) => writeRound(covariances, i * 6, sigma))
   return { positions, covariances }
 }
 
@@ -129,7 +129,7 @@ void test('the typical diameter of one round Gaussian is its drawn diameter, and
   assert.equal(typicalDiameter(ellipsoid, cutoff), 2 * cutoff * Math.sqrt(2))
   const sizes = [0.5, 3, 1, 2, 10]
   const several = new Float32Array(sizes.length * 6)
-  sizes.forEach((sigma, i) => writeCovariance(several, i * 6, sigma, sigma, sigma, 0, 0, 0, 1))
+  sizes.forEach((sigma, i) => writeRound(several, i * 6, sigma))
   assert.ok(Math.abs(typicalDiameter(several, cutoff) - 2 * cutoff * 2) <= tolerance)
   // An even count takes the middle pair's mean
   assert.ok(Math.abs(typicalDiameter(several.subarray(0, 24), cutoff) - 2 * cutoff * 1.5) <= tolerance)

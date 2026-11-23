@@ -28,7 +28,7 @@ export function groupBy<T>(items: readonly T[], key: (item: T) => string): Group
   return { groups, count: numbers.size }
 }
 
-// One Gaussian per group: its centre, its covariance in three's order [xx, xy, xz, yy, yz, zz], its members' summed
+// One Gaussian per group: its centre, its covariance in the order [xx, xy, xz, yy, yz, zz], its members' summed
 // weight and how many members it has
 export interface MergedGaussians {
   centers: Float32Array
@@ -112,7 +112,7 @@ export function typicalDiameter(covariances: Float32Array, cutoff: number) {
 }
 
 // How many pixels across a level's typical Gaussian must still be for that level to be drawn, chosen by eye on the
-// GroEL–GroES complex: a splat drawn smaller costs its sort and its draw for nothing the eye can use
+// GroEL–GroES complex: a splat drawn smaller costs its draw for nothing the eye can use
 export const levelPixels = 4
 
 // The pixels a unit of length spans on screen at a view depth: the viewport's height over the height the view spans

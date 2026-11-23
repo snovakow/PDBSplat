@@ -61,7 +61,7 @@ function atomTable(rows: Row[], order: readonly Column[] = columns) {
   return loop('_atom_site', order, rows.map((row, i) => atomRow({ id: String(i + 1), ...row }, order)))
 }
 
-// Six values in three's covariance order from a tensor's U11, U22, U33, U12, U13 and U23
+// Six values in a covariance's order from a tensor's U11, U22, U33, U12, U13 and U23
 function covariance(u11: number, u22: number, u33: number, u12: number, u13: number, u23: number) {
   return [u11, u12, u13, u22, u23, u33]
 }

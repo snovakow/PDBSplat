@@ -1,55 +1,41 @@
 import { button, folder, LevaInputs, useControls } from 'leva'
 import { useEffect } from 'react'
 import { atomText } from './atomText.ts'
-import { isOption, optionKeys, viewOptions, type Dependence, type Folder, type ShownFor, type ViewOptions } from './options.ts'
-import { examples, firstEntry, shownAtoms, useStore, type Status } from './store.ts'
-import { styleOf, styles, type Style } from './viewer/styles.ts'
+import { optionKeys, viewOptions, type EntryHolds, type Folder, type ViewOptions } from './options.ts'
+import { presetOf, presets, withPreset } from './presets.ts'
+import { optionShows } from './shownOptions.ts'
+import { entryHolds, examples, firstEntry, shownAtoms, useStore, type Status } from './store.ts'
+import { styles } from './viewer/styles.ts'
 
 const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', ready: 'Ready', failed: '' }
 
 // Each example as the panel lists it, such as "1CRN crambin"
 const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
 
-// The full path in the panel of an option's control, its folder and its key, which a render test reads it by, as it
-// reads nothing from a bare key inside a folder
-const pathOf = (option: keyof ViewOptions) => `${viewOptions[option].folder}.${option}`
-const stylePath = pathOf('style')
+// The Preset list: each preset by its name, and custom, which the list reads once the options are no preset's
+const custom = 'custom'
+const presetNames = [...presets.map((preset) => preset.name), custom]
 
-// The path of the control an entry depends on, which the table names by its key
-function optionPath(key: string) {
-  if (!isOption(key)) throw new Error(`No option is named ${key}`)
-  return pathOf(key)
-}
-
-// Whether a value a render test reads is a style's id
-const isStyle = (value: unknown): value is Style => styles.some((style) => style.id === value)
+// What the Preset list reads for a set of options and what the entry holds
+const presetName = (options: ViewOptions, entry: EntryHolds) => presetOf(options, entry)?.name ?? custom
 
 // The styles by their labels in the panel
 const styleOptions = Object.fromEntries(styles.map((style) => [style.label, style.id]))
 
-// Whether a control is shown for a style
-function shownForStyle(shownFor: ShownFor, style: Style) {
-  if (shownFor === 'every') return true
-  return 'kind' in shownFor ? styleOf(style).kind === shownFor.kind : shownFor.styles.includes(style)
-}
-
-// Whether a control another hides is shown, by that control's value
-function shownWhile(dependence: Dependence, value: unknown) {
-  if ('is' in dependence) return value === dependence.is
-  if ('isNot' in dependence) return value !== dependence.isNot
-  return typeof value === 'number' && value > dependence.above
-}
-
 interface PanelProps {
   forceWebGL: boolean
   setForceWebGL: (forceWebGL: boolean) => void
-  // Which backend is drawing, and why when the GPU is known to fail WebGPU
+  // Which backend is drawing
   renderer: string
 }
 
-// The leva panel: the view options go to the store as they change, and the entry's details come back read-only.
-// The Example and Use WebGL 2 handlers act only on changes made in the panel, so the values set below don't echo back
+// The leva panel: the view options go to the store as they change, and the entry's details come back read-only. The
+// controls follow the store's options, which a preset sets all at once. The Preset, Example and Use WebGL 2 handlers
+// act only on changes made in the panel, so the values set below don't echo back
 export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
+  const options = useStore((s) => s.options)
+  // The same object while the entry's atoms and models stand
+  const held = useStore(entryHolds)
   const id = useStore((s) => s.id)
   const title = useStore((s) => s.title)
   const status = useStore((s) => s.status)
@@ -61,20 +47,17 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   const [, set] = useControls(() => {
     const { load, setOptions } = useStore.getState()
 
-    // The control of one option, which sets the option as it changes, shown for the styles its entry names and while
-    // the control its entry depends on allows
+    // The control of one option, which sets the option as it changes, shown only while the options and the entry leave
+    // it something to change. The test reads the store, not the panel's own values: leva runs it whenever a value of
+    // the panel's is set, which the effects below do with every change of the options and of the entry
     const control = <K extends keyof ViewOptions>(option: K) => {
       const entry = viewOptions[option]
-      const forStyles = entry.shownFor === 'every' ? null : entry.shownFor
-      const dependence = entry.shownWhile ? { ...entry.shownWhile, path: optionPath(entry.shownWhile.option) } : null
-      const render =
-        forStyles || dependence
-          ? (get: (path: string) => unknown) => {
-              const style = get(stylePath)
-              const forStyle = !forStyles || (isStyle(style) && shownForStyle(forStyles, style))
-              return forStyle && (!dependence || shownWhile(dependence, get(dependence.path)))
-            }
-          : undefined
+      const hides = entry.shownFor !== 'every' || entry.shownWhile !== undefined
+      const shows = () => {
+        const state = useStore.getState()
+        return optionShows(option, state.options, entryHolds(state))
+      }
+      const render = hides ? shows : undefined
       const onChange = (value: ViewOptions[K]) => {
         const changes: Partial<ViewOptions> = {}
         changes[option] = value
@@ -91,6 +74,16 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       Object.fromEntries(optionKeys.filter((option) => viewOptions[option].folder === name).map((option) => [option, control(option)]))
 
     return {
+      // At the top, as it sets most of what's below it: choosing a preset sets every option of its look at once
+      preset: {
+        label: 'Preset',
+        options: presetNames,
+        value: presetName(useStore.getState().options, entryHolds(useStore.getState())),
+        onChange: (name: string, _path, { fromPanel }) => {
+          const preset = presets.find((candidate) => candidate.name === name)
+          if (fromPanel && preset) setOptions(withPreset(useStore.getState().options, preset))
+        },
+      },
       example: {
         label: 'Example',
         options: exampleOptions,
@@ -127,6 +120,13 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
       }),
     }
   })
+
+  // The controls show the options, so that a preset moves every control it sets, and the Preset list names the preset
+  // they're of for the entry, or reads custom. Each control the options move tells the store its value, which it
+  // already has. Setting them also has leva test again which controls show, against the options as they now are
+  useEffect(() => {
+    set({ ...options, preset: presetName(options, held) })
+  }, [set, options, held])
 
   // Once an entry has loaded, the ID field shows it, and so does the example list if it's one of the examples
   useEffect(() => {

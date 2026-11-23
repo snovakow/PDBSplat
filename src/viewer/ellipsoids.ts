@@ -1,12 +1,13 @@
-// An atom's thermal ellipsoid as a splat's covariance: the region the atom spends half its time in, by its
-// anisotropic displacement, or by its B-factor alike in every direction where the entry gives it none
+// An atom's thermal ellipsoid as a covariance: the region the atom spends half its time in, by its anisotropic
+// displacement, or by its B-factor alike in every direction where the entry gives it none
 import type { Atom } from '../pdb/mmcif.ts'
+import { surfaceDeviations } from './ellipsoidGeometry.ts'
 
 // An atom lies within its half-probability ellipsoid at a Mahalanobis distance of the square root of the median of χ²
-// with three degrees of freedom, and three draws a splat out to two standard deviations. So the splat's covariance is
-// U times a quarter of that median, about 0.5915, times Size squared
+// with three degrees of freedom, and an ellipsoid's surface is drawn two standard deviations out. So the covariance
+// is U times a quarter of that median, about 0.5915, times Size squared
 const medianChiSquared3 = 2.365974
-const ellipsoidShare = medianChiSquared3 / 4
+const ellipsoidShare = medianChiSquared3 / (surfaceDeviations * surfaceDeviations)
 
 // The least variance along any axis, in square ångströms, at any Size: a tensor that isn't positive definite still
 // draws as an ellipsoid, and an atom whose B-factor is 0 stays visible
@@ -27,7 +28,7 @@ const maxSweeps = 32
 const matrix = new Float64Array(9)
 const vectors = new Float64Array(9)
 
-// Writes the atom's ellipsoid at Size into target at offset, in three's covariance order [xx, xy, xz, yy, yz, zz],
+// Writes the atom's ellipsoid at Size into target at offset, as a covariance in the order [xx, xy, xz, yy, yz, zz],
 // with every eigenvalue raised to at least the least variance
 export function writeEllipsoid(target: Float32Array, offset: number, atom: Atom, scale: number) {
   const share = ellipsoidShare * scale * scale

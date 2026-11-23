@@ -1,9 +1,26 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { defaultOptions, isOption, optionKeys, viewOptions, type Folder, type ViewOptions } from '../src/options.ts'
+import {
+  defaultOptions,
+  isOption,
+  optionKeys,
+  viewOptions,
+  wholeEntry,
+  type Folder,
+  type ViewOptions,
+} from '../src/options.ts'
 import type { Atom } from '../src/pdb/mmcif.ts'
-import { examples, firstEntry, isShown, shownAtoms, shownModel, useStore } from '../src/store.ts'
-import { isOpaque, isSolid, styles } from '../src/viewer/styles.ts'
+import {
+  entryHolds,
+  examples,
+  firstEntry,
+  isShown,
+  openingOptions,
+  shownAtoms,
+  shownModel,
+  useStore,
+} from '../src/store.ts'
+import { hasGhosts, hasSolids, isOpaque, styles } from '../src/viewer/styles.ts'
 
 // The store's pure rules: which atoms are shown, which model, the shown atoms' one array, that unchanged options keep
 // their object, that the options table gives the defaults, and that the opening look holds together
@@ -122,6 +139,36 @@ void test('shownAtoms gives the same array while the entry, Hydrogens, Waters, A
   assert.deepEqual(shownAtoms(useStore.getState()), [])
 })
 
+void test('an entry holds models, alternates, waters and hydrogens by its atoms and models', () => {
+  const plain = [atom({})]
+  assert.deepEqual(entryHolds({ atoms: plain, models: [1] }), {
+    models: false,
+    alternates: false,
+    waters: false,
+    hydrogens: false,
+  })
+  // Before an entry loads it holds none of them
+  assert.deepEqual(entryHolds({ atoms: [], models: [] }), entryHolds({ atoms: plain, models: [1] }))
+  const full = [
+    atom({ element: 'H', hydrogen: true }),
+    atom({ residueName: 'HOH', water: true, polymer: false }),
+    atom({ altLoc: 'A' }),
+    atom({ altLoc: 'B', firstConformation: false }),
+    atom({ model: 2 }),
+  ]
+  const models = [1, 2]
+  const holds = entryHolds({ atoms: full, models })
+  assert.deepEqual(holds, wholeEntry)
+  assert.equal(entryHolds({ atoms: full, models }), holds)
+  assert.notEqual(entryHolds({ atoms: [...full], models }), holds)
+  // Each by its own atoms alone
+  assert.equal(entryHolds({ atoms: [full[0]], models: [1] }).hydrogens, true)
+  assert.equal(entryHolds({ atoms: [full[0]], models: [1] }).waters, false)
+  assert.equal(entryHolds({ atoms: [full[1]], models: [1] }).waters, true)
+  assert.equal(entryHolds({ atoms: [full[2]], models: [1] }).alternates, true)
+  assert.equal(entryHolds({ atoms: plain, models }).models, true)
+})
+
 void test('the options table gives the defaults, in the panel folders, with every key of the options', () => {
   const folders: Folder[] = ['Look', 'Colour', 'Atoms', 'Scene']
   assert.deepEqual(Object.keys(defaultOptions), Object.keys(viewOptions))
@@ -138,24 +185,38 @@ void test('the options table gives the defaults, in the panel folders, with ever
     if (entry.kind === 'choice') assert.ok(Object.values(entry.choices).includes(entry.default), key)
     if (entry.kind === 'style') assert.ok(styles.some((style) => style.id === entry.default), key)
     // A control another hides names that control by its key, which is an option of its own
-    if (entry.shownWhile) assert.ok(isOption(entry.shownWhile.option), `${key} depends on ${entry.shownWhile.option}`)
+    if (entry.shownWhile && 'option' in entry.shownWhile) {
+      assert.ok(isOption(entry.shownWhile.option), `${key} depends on ${entry.shownWhile.option}`)
+    }
   }
   assert.equal(isOption('toString'), false)
   assert.equal(isOption('style'), true)
+  // No slider reaches an end that draws what another setting already does: Opacity stops short of nothing at all,
+  // Fade short of fading nothing, as with every atom in focus, and Clip short of cutting everything away
+  assert.ok(viewOptions.opacity.min > 0)
+  assert.ok(viewOptions.fade.max < 1)
+  assert.ok(viewOptions.clip.max < 1)
   // The values the page opens with
   assert.equal(defaultOptions.style, 'spheres')
   assert.equal(defaultOptions.opacity, 1)
   assert.equal(defaultOptions.colorBy, 'chain')
   assert.equal(defaultOptions.hydrogens, true)
   assert.equal(defaultOptions.waters, false)
+  assert.equal(defaultOptions.spin, true)
+})
+
+void test('the page opens on the defaults, with Spin off for a visitor whose system asks for reduced motion', () => {
+  assert.equal(openingOptions(false), defaultOptions)
+  assert.deepEqual(openingOptions(true), { ...defaultOptions, spin: false })
 })
 
 void test('the opening look is solid spheres, which its ambient occlusion acts on, on one of the examples', () => {
   // The look leans on ambient occlusion, which acts only while everything drawn is opaque, as the solid spheres are.
-  // A default that kept the spheres from being solid, such as Opacity below full or a Focus other than all, would
-  // turn it off unseen
-  assert.equal(isSolid(defaultOptions), true)
-  assert.equal(isOpaque(defaultOptions), true)
+  // A default that made some of them see-through, such as Opacity below full or a Focus that fades atoms without
+  // hiding them, would turn it off unseen
+  assert.equal(hasSolids(defaultOptions), true)
+  assert.equal(hasGhosts(defaultOptions, wholeEntry), false)
+  assert.equal(isOpaque(defaultOptions, wholeEntry), true)
   assert.ok(defaultOptions.ao > 0)
   // The rest of the look is on: the shadows of depth and burial, and the glow
   assert.ok(defaultOptions.depthCue > 0 && defaultOptions.burial > 0 && defaultOptions.bloom > 0)

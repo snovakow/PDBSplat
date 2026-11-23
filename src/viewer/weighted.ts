@@ -2,15 +2,15 @@ import { exp, log, max, min, mix, mrt, output, positionView, smoothstep, vec4 } 
 import { BlendMode, MaterialBlending, type Node, type PassNode } from 'three/webgpu'
 import { cueFar, cueNear } from './shading.ts'
 
-// The weighted-sum blend. Each splat adds its colour into one target, weighted by its alpha and by how near it is, and
-// what it lets through into a second. A composite divides the sum out and lays it over the background by how much the
-// splats together let through. No order is needed, so nothing flips as the view turns, and the structure reads more
-// like an X-ray than like layered spheres
+// The weighted sum, which the soft splats are laid over one another by under the normal Blend. Each splat adds its
+// colour into one target, weighted by its alpha and by how near it is, and what it lets through into a second. A
+// composite divides the sum out and lays it over the background by how much the splats together let through. No order
+// is needed, so nothing flips as the view turns, and the structure reads more like a cloud than like layered spheres
 
 // The floor the weight falls to at the structure's farthest point, from 1 at its nearest, and the power it's then
 // raised to, which bends the fall between them, so that a splat at the farthest point weighs the floor to that power.
-// Nearer splats then count for more of a pixel's colour, which stands in for the order the sorted blend draws them in.
-// Chosen by eye on crambin's spheres beside the sorted render
+// Nearer splats then count for more of a pixel's colour, which stands in for their hiding the ones behind them.
+// Chosen by eye on crambin
 const weightFloor = 0.1
 const weightPower = 3
 
@@ -26,11 +26,10 @@ const accumulationTarget = 'output'
 const transmittanceTarget = 'transmittance'
 
 // Sets a scene pass to sum its splats into two targets, and returns the targets and the composite that resolves them
-// over the background, the colour the sorted blend lays its splats over, as a premultiplied colour
+// over the background, as a premultiplied colour
 export function weightedBlend(scenePass: PassNode, background: Node<'vec4'>) {
   // The weight falls with view depth across the structure, between the depth cue's near and far. Every pixel of a
-  // splat has its centre's view depth, as three rebuilds the fragment's position from a clip position whose depth all
-  // four corners share
+  // splat has its centre's view depth, as its rectangle is drawn flat at that depth
   const weight = mix(1, weightFloor, smoothstep(cueNear, cueFar, positionView.z.negate())).pow(weightPower)
   // The splat's colour comes premultiplied by its alpha, so with the weight on it the accumulation sums colour × alpha
   // × weight beside alpha × weight. The transmittance sums −log(1 − alpha), which turns the product of what each splat
@@ -47,7 +46,8 @@ export function weightedBlend(scenePass: PassNode, background: Node<'vec4'>) {
 
   // The sum's colour divided by its weight is the splats' weighted mean colour, and what they let through together is
   // the exponential of minus the summed transmittance. The mean covers the pixel by the rest, over the background. With
-  // one splat this is exactly the sorted blend's result, its colour times its alpha over the background times the rest
+  // one splat this is exactly that splat laid over the background: its colour times its alpha, over the background
+  // times the rest
   const sum = scenePass.getTextureNode(accumulationTarget)
   const transmittance = scenePass.getTextureNode(transmittanceTarget)
   const mean = sum.rgb.div(max(sum.a, leastWeight))
