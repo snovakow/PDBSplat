@@ -6,17 +6,12 @@ export function asWebGPU(renderer: unknown): WebGPURenderer {
   return renderer
 }
 
-// GPUs that offer WebGPU but can't compile the splat sort's shaders, and take Chrome's GPU process down trying.
-// Haswell's Intel Iris (gen-7) fails on CountingSortReset
-const failingGPUs = [{ vendor: 'intel', architecture: 'gen-7' }] as const
-
 // The fallback's start is retried while a crashed GPU process restarts, as its WebGL 2 context comes back null till then
 const fallbackAttempts = 5
 const fallbackRetryDelay = 1000
 
-// The Canvas's renderer: WebGPU where the browser offers it and the GPU isn't known to fail it, and otherwise three's
-// WebGL 2 fallback, which forceWebGL also asks for. A WebGPU failure after the start calls fallBack, and report is told
-// which backend is drawing
+// The Canvas's renderer: WebGPU where the browser offers it, and otherwise three's WebGL 2 fallback, which forceWebGL
+// also asks for. A WebGPU failure after the start calls fallBack, and report is told which backend is drawing
 export async function createRenderer(
   canvas: object,
   forceWebGL: boolean,
@@ -24,29 +19,15 @@ export async function createRenderer(
   report: (renderer: string) => void,
 ) {
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Expected an HTMLCanvasElement')
-  const failingGPU = forceWebGL ? null : await knownFailingGPU()
-  if (failingGPU) {
-    console.info(`PDBSplat: this GPU (${failingGPU}) is known to fail WebGPU, so starting on the WebGL 2 fallback`)
-  }
-  const renderer =
-    forceWebGL || failingGPU ? await startFallback(canvas) : await new WebGPURenderer({ canvas, antialias: true }).init()
+  const renderer = forceWebGL
+    ? await startFallback(canvas)
+    : await new WebGPURenderer({ canvas, antialias: true }).init()
   const webgpu = 'isWebGPUBackend' in renderer.backend
   console.info(`PDBSplat: rendering with ${webgpu ? 'WebGPU' : 'the WebGL 2 fallback'}`)
   // Two quick toggles can leave an unmounted Canvas's renderer finishing last, so only one still on the page reports
-  if (canvas.isConnected) report(webgpu ? 'WebGPU' : failingGPU ? 'WebGL 2, as this GPU fails WebGPU' : 'WebGL 2')
+  if (canvas.isConnected) report(webgpu ? 'WebGPU' : 'WebGL 2')
   if (webgpu) watchForFailure(renderer, fallBack)
   return renderer
-}
-
-// Names the adapter if it's in failingGPUs, or returns null
-async function knownFailingGPU() {
-  const adapter = await navigator.gpu?.requestAdapter().catch(() => null)
-  // Chrome offered WebGPU before adapter.info, which the DOM library types as always there
-  const info = adapter?.info
-  if (!info) return null
-  const { vendor, architecture } = info
-  const failing = failingGPUs.some((gpu) => gpu.vendor === vendor && gpu.architecture === architecture)
-  return failing ? `${vendor} ${architecture}` : null
 }
 
 async function startFallback(canvas: HTMLCanvasElement) {
@@ -64,8 +45,8 @@ async function startFallback(canvas: HTMLCanvasElement) {
   }
 }
 
-// Some GPUs offer WebGPU but can't compile three's shaders, such as the splat sort's on a 2014 Intel Iris.
-// A GPUInternalError or a lost device switches to the WebGL 2 fallback; validation errors are bugs, so they don't
+// Some GPUs offer WebGPU and then fail it. A GPUInternalError or a lost device switches to the WebGL 2 fallback;
+// validation errors are bugs, so they don't
 function watchForFailure(renderer: WebGPURenderer, fallBack: () => void) {
   const logError = renderer.onError
   const logDeviceLost = renderer.onDeviceLost
