@@ -9,6 +9,7 @@ import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
+import { setDrawnReach } from './nearPlane.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 import { cutMask, meshColor, samePlacement } from './shading.ts'
 import { isBackShell } from './styles.ts'
@@ -162,6 +163,9 @@ export function ProteinSurface({ bounds }: Props) {
         paint(next, options.colorBy, options.burial)
         if (surface.current) discard(scene, surface.current)
         scene.add(next.backDepth, next.back, next.depth, next.mesh)
+        // The mesh reaches as far from the structure's centre as its bounding sphere does
+        const bounding = geometry.boundingSphere
+        if (bounding) setDrawnReach(bounding.center.length() + bounding.radius)
         surface.current = next
         console.info(
           `PDBSplat: surface of ${shown.length} atoms at ${built.spacing.toFixed(2)} Å: ` +

@@ -10,6 +10,7 @@ import { requestField } from '../surface/surfaceWorker.ts'
 import { createAtomTable, paintAtomTable, type AtomTable, type TablePaint } from './atomTable.ts'
 import type { Bounds } from './bounds.ts'
 import { fieldMarch, type FieldMarch } from './field.ts'
+import { setDrawnReach } from './nearPlane.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 
 interface Props {
@@ -121,6 +122,8 @@ export function ProteinField({ bounds }: Props) {
         box.scale.set((nx - 1) * field.spacing, (ny - 1) * field.spacing, (nz - 1) * field.spacing)
         box.position.fromArray(field.origin).addScaledVector(box.scale, 0.5)
         box.visible = true
+        // The cloud reaches no farther from the structure's centre than the box's corners
+        setDrawnReach(box.position.length() + box.scale.length() / 2)
         target.field = { table, atoms, shown, unregister: useStore.getState().registerPick(pick) }
         console.info(
           `PDBSplat: field of ${shown.length} atoms at ${field.spacing.toFixed(2)} Å: ` +

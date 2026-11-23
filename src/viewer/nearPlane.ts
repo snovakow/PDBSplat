@@ -1,15 +1,37 @@
 import { PerspectiveCamera, Vector3, type Camera, type Ray } from 'three'
 import { clipDepth } from './shading.ts'
 
-// The camera's near plane, which framing places in front of the structure, and the cut nothing is drawn nearer than
+// The camera's near plane, which follows the camera and stays in front of what's drawn, and the cut nothing is drawn
+// nearer than
 
-// How many times nearer than the structure's radius the near plane sits, close enough that zooming in doesn't cut
-// into the atoms, and far enough to keep the depth buffer's precision
+// How many times nearer than the structure's radius the near plane sits while the camera is close to the structure or
+// inside it, close enough that zooming in doesn't cut into the atoms
 const nearDivisor = 100
 
-// The near plane's distance for a structure of this radius
+// The near plane's distance, while the camera is close to a structure of this radius or inside it
 export function baseNear(radius: number) {
   return radius / nearDivisor
+}
+
+// How far from the structure's centre anything drawn reaches, as the style drawing it last measured
+let lastReach = 0
+
+// Each style gives the radius around the structure's centre that holds everything it draws, as it puts it in the scene
+export function setDrawnReach(radius: number) {
+  lastReach = radius
+}
+
+export function drawnReach() {
+  return lastReach
+}
+
+// The near plane's distance for a camera this far from the structure's centre: halfway to the nearest point anything
+// drawn could reach, or the base while the camera is that close or inside. A depth buffer's precision at a depth goes
+// as the near plane's distance, and two surfaces that meet in a crease are told apart there by their depths alone: a
+// near plane a hundred times nearer than the structure spends almost all of it in front of the structure, and leaves
+// a crease's pixels to rounding, which changes with every move of the view
+export function nearPlane(distance: number, reach: number, radius: number) {
+  return Math.max(baseNear(radius), (distance - reach) / 2)
 }
 
 // The view depth nothing is drawn nearer than, as the last frame set it: Clip's cut, or the camera's near plane where

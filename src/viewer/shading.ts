@@ -88,7 +88,7 @@ export function depthShade(depth: Node<'float'>) {
 }
 
 // The view depth of Clip's cut, which the scene copies in, or 0 while nothing is cut. Every style takes the cut pixel
-// by pixel, in its own shader, and the camera's near plane stays where framing put it
+// by pixel, in its own shader, and the camera's near plane stays in front of everything drawn
 export const clipDepth = sharedUniform(0)
 // The view depth nothing is drawn nearer than: the cut, or the camera's near plane where that's farther
 export const cutDepth = max(clipDepth, cameraNear)

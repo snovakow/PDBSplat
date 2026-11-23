@@ -98,7 +98,7 @@ export function Effects() {
     if (aoOn) {
       // A second pass draws only what's opaque, without multisampling, for a depth that can be read pixel by pixel.
       // The splats carry no normals, so the occlusion's normals are rebuilt from that depth. The camera's inverse
-      // projection goes in as a uniform, which follows it as the window resizes or a new entry moves the near plane
+      // projection goes in as a uniform, which follows it as the window resizes or the near plane follows the camera
       const depthPass = pass(scene, camera, { samples: 0 })
       depthPass.transparent = false
       const depth = depthPass.getTextureNode('depth')

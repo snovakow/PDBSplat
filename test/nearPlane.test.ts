@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { PerspectiveCamera, Ray, Vector3 } from 'three'
-import { baseNear, beyondCut, cutAlong, cutDepth } from '../src/viewer/nearPlane.ts'
+import {
+  baseNear,
+  beyondCut,
+  cutAlong,
+  cutDepth,
+  drawnReach,
+  nearPlane,
+  setDrawnReach,
+} from '../src/viewer/nearPlane.ts'
 import { clipDepth } from '../src/viewer/shading.ts'
 
-// The cut nothing is drawn nearer than: Clip's cut, or the camera's near plane where that's farther, as a pick reads it
+// The near plane, which follows the camera to halfway in front of what's drawn, and the cut nothing is drawn nearer
+// than: Clip's cut, or the camera's near plane where that's farther, as a pick reads it
 
 // A camera at the origin looking down the z axis, as a render leaves its matrices
 function cameraWith(near: number) {
@@ -13,9 +22,37 @@ function cameraWith(near: number) {
   return camera
 }
 
-void test("the near plane sits a hundredth of the structure's radius away", () => {
+void test("the near plane sits a hundredth of the structure's radius away while the camera is close", () => {
   assert.equal(baseNear(50), 0.5)
   assert.equal(baseNear(0), 0)
+  // Inside what's drawn, at its edge, and so close outside it that halfway would be nearer than the base
+  assert.equal(nearPlane(10, 60, 50), 0.5)
+  assert.equal(nearPlane(60, 60, 50), 0.5)
+  assert.equal(nearPlane(60.8, 60, 50), 0.5)
+})
+
+void test('farther out, the near plane sits halfway to the nearest point anything drawn could reach', () => {
+  assert.equal(nearPlane(160, 60, 50), 50)
+  assert.equal(nearPlane(61.25, 60, 50), 0.625)
+  // Nothing drawn is nearer than the near plane once the camera is farther from it than the base, and the near plane
+  // moves with the camera, without a jump
+  let previous = nearPlane(0, 60, 50)
+  for (let distance = 0; distance <= 400; distance += 0.25) {
+    const near = nearPlane(distance, 60, 50)
+    if (distance - 60 > baseNear(50)) assert.ok(near < distance - 60, `${distance}`)
+    assert.ok(near >= previous && near - previous <= 0.125 + 1e-12, `${distance}`)
+    previous = near
+  }
+})
+
+void test('the reach drawn is the one the style drawing last gave', (t) => {
+  t.after(() => {
+    setDrawnReach(0)
+  })
+  setDrawnReach(42.5)
+  assert.equal(drawnReach(), 42.5)
+  setDrawnReach(7)
+  assert.equal(drawnReach(), 7)
 })
 
 void test("the cut is Clip's, or the near plane where that is farther, which a slanted ray meets later", (t) => {

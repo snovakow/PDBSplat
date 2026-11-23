@@ -12,6 +12,7 @@ import { ellipsoidVertex } from './ellipsoid.ts'
 import {
   covarianceSize,
   createEllipsoids,
+  ellipsoidsReach,
   paintSize,
   surfaceDeviations,
   writeRound,
@@ -29,7 +30,7 @@ import {
   type Grouping,
   type Level,
 } from './levels.ts'
-import { cutAlong } from './nearPlane.ts'
+import { cutAlong, setDrawnReach } from './nearPlane.ts'
 import { invertCovariances, nearestEllipsoid, type EllipsoidHit } from './rayEllipsoids.ts'
 import { layerNodes, softColor, type Layer } from './shading.ts'
 import { compositeOf, hasGhosts, hasSolids, isBackShell } from './styles.ts'
@@ -178,6 +179,8 @@ export function ProteinSplats({ bounds }: Props) {
       diameters: [],
     }
 
+    // How far from the structure's centre the levels reach, the farthest of them, as any of them may be shown
+    let reach = 0
     // A level's meshes on its ellipsoids: one for each layer while the level is layered, and otherwise one of soft
     // splats that's summed or glows. Every mesh draws the same instances, and none is culled by the quad's own bounds,
     // which say nothing of where its instances are
@@ -238,6 +241,7 @@ export function ProteinSplats({ bounds }: Props) {
       for (const mesh of meshes) scene.add(mesh)
       current.levels.push({ instances, meshes, grouping })
       current.diameters.push(typicalDiameter(levelCovariances, surfaceDeviations))
+      reach = Math.max(reach, ellipsoidsReach(levelCenters, levelCovariances))
       return instances
     }
 
@@ -258,6 +262,7 @@ export function ProteinSplats({ bounds }: Props) {
       }
     }
     paintNow(current)
+    setDrawnReach(reach)
     if (built.length > 1) showLevel(current, camera, size.height)
     drawn.current = current
 

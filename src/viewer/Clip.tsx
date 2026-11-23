@@ -14,7 +14,7 @@ const forward = new Vector3()
 // Cuts away what's in front of a plane across the structure, facing the camera, as far in from its front as Clip says
 // across its depth. Every style takes the cut in its own shader, pixel by pixel, at the one depth set here: the
 // spheres are cut across and show a flat face, the soft splats fade out as they come through, the surface opens where
-// it's cut, and the field starts there. The camera's near plane stays where framing put it
+// it's cut, and the field starts there. The camera's near plane is no part of it, and stays in front of the structure
 export function Clip({ bounds }: Props) {
   const clip = useStore((s) => s.options.clip)
 

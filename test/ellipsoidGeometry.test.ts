@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createEllipsoids, covarianceSize, paintSize, writeRound } from '../src/viewer/ellipsoidGeometry.ts'
+import {
+  createEllipsoids,
+  covarianceSize,
+  ellipsoidsReach,
+  paintSize,
+  surfaceDeviations,
+  writeRound,
+} from '../src/viewer/ellipsoidGeometry.ts'
 
 // The ellipsoids' geometry: one quad, drawn once for each, with each one's centre, covariance and paint as the
 // instance's attributes
@@ -11,6 +18,41 @@ void test('a round covariance has its variance along each axis and nothing betwe
   assert.deepEqual([...target], [0, 0.25, 0, 0, 0.25, 0, 0.25, 0])
   assert.equal(covarianceSize, 6)
   assert.equal(paintSize, 4)
+})
+
+void test('the reach is the farthest an ellipsoid reaches from the origin, exact for one with no cross terms', () => {
+  // A round one of 1 Å at (3, 4, 0) reaches 5 + 2 Å, and the one stretched to 2 Å along x at the origin 4 Å
+  const round = new Float32Array(6)
+  writeRound(round, 0, 1)
+  assert.equal(ellipsoidsReach(new Float32Array([3, 4, 0]), round), 5 + surfaceDeviations)
+  const stretched = new Float32Array([4, 0, 0, 1, 0, 1])
+  assert.equal(ellipsoidsReach(new Float32Array([0, 0, 0]), stretched), 2 * surfaceDeviations)
+  // Of several, the farthest
+  const both = new Float32Array([...round, ...stretched])
+  assert.equal(ellipsoidsReach(new Float32Array([3, 4, 0, 0, 0, 0]), both), 5 + surfaceDeviations)
+  assert.equal(ellipsoidsReach(new Float32Array(0), new Float32Array(0)), 0)
+})
+
+void test('a tilted ellipsoid reaches no farther than the reach given, along any direction', () => {
+  // Stretched along the diagonal of the xy plane: variances 9 and 1 along (1, 1, 0)/√2 and (1, −1, 0)/√2, and 4
+  // along z, whose largest reach is 2 × 3 Å
+  const covariance = new Float32Array([5, 4, 0, 5, 0, 4])
+  const reach = ellipsoidsReach(new Float32Array([0, 0, 0]), covariance)
+  assert.ok(reach >= 3 * surfaceDeviations)
+  // The surface reaches 2√(uᵀΣu) along a unit direction u, which a sweep over every direction never passes
+  const [xx, xy, xz, yy, yz, zz] = covariance
+  let farthest = 0
+  for (let i = 0; i <= 60; i++) {
+    for (let j = 0; j < 120; j++) {
+      const polar = (Math.PI * i) / 60
+      const around = (2 * Math.PI * j) / 120
+      const [x, y, z] = [Math.sin(polar) * Math.cos(around), Math.sin(polar) * Math.sin(around), Math.cos(polar)]
+      const form = x * (xx * x + xy * y + xz * z) + y * (xy * x + yy * y + yz * z) + z * (xz * x + yz * y + zz * z)
+      farthest = Math.max(farthest, surfaceDeviations * Math.sqrt(form))
+    }
+  }
+  assert.ok(Math.abs(farthest - 3 * surfaceDeviations) < 1e-3)
+  assert.ok(reach >= farthest)
 })
 
 void test('the geometry draws one quad for each ellipsoid, from its centre, covariance and paint', () => {
