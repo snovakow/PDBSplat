@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import { PerspectiveCamera } from 'three'
 import { OrbitControls } from 'three-stdlib'
 import { longestFrame, spinSpeed, turnSeconds } from '../src/viewer/spinSpeed.ts'
 
-// Spin's speed, on the orbit controls drei wraps, which are three-stdlib's, as drei brings it in: that it turns the
-// camera once every turnSeconds whatever the frame rate, and that a frame longer than longestFrame turns it no further
-// than one of longestFrame
+// Spin's speed, on the orbit controls drei wraps, which are three-stdlib's: that it turns the camera once every
+// turnSeconds whatever the frame rate, and that a frame longer than longestFrame turns it no further than one of
+// longestFrame. The app reaches three-stdlib only through drei, and it's among this project's own packages for these
+// tests alone, which the first of them holds to the copy drei wraps
+
+void test('the orbit controls driven here are the copy of three-stdlib that drei wraps', () => {
+  const ours = createRequire(import.meta.url).resolve('three-stdlib')
+  const dreis = createRequire(import.meta.resolve('@react-three/drei')).resolve('three-stdlib')
+  assert.equal(ours, dreis)
+})
 
 // How far the orbit controls turn the camera about the vertical axis over frames of the times given, in seconds, in
 // turns: negative as they turn it to its left, which turns the structure to the right. The controls are as drei sets
