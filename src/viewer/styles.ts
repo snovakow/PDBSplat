@@ -79,14 +79,17 @@ export function hasSolids(options: LayerOptions) {
   return isLayered(options) && options.opacity === 1
 }
 
-// The options that decide whether the far side is drawn: the layers' and the Back shell switch
-type BackShellOptions = LayerOptions & Pick<ViewOptions, 'backShell'>
+// The options that decide whether the far side is drawn
+type BackShellOptions = Pick<ViewOptions, 'style' | 'opacity' | 'backShell'>
 
-// Whether the far side of what's see-through is drawn under its near side, so that it reads as hollow glass: the Back
-// shell switch on, with a see-through layer of spheres or the surface below full Opacity. At full Opacity the surface
-// is opaque and hides its far side, as solid spheres do theirs, so the switch draws nothing
-export function isBackShell(options: BackShellOptions, entry: Alternates) {
-  return options.backShell && (hasGhosts(options, entry) || (options.style === 'surface' && options.opacity < 1))
+// Whether the far side of the structure is drawn under its near side, so that it reads as hollow glass: the Back
+// shell switch on, with the spheres or the surface below full Opacity, where all of the structure is see-through. At
+// full Opacity the surface is opaque and hides its far side, and the spheres are solid but for those Focus fades or
+// an alternate's occupancy thins. Those stay one layer: their far side would have to show in front of the solid
+// spheres behind it and hide behind the ones in front, and a pixel keeps one depth, which can't hold both the nearest
+// solid surface and the farthest see-through one
+export function isBackShell(options: BackShellOptions) {
+  return options.backShell && options.opacity < 1 && (isLayered(options) || options.style === 'surface')
 }
 
 // Whether everything drawn hides what's behind it, so that the depth of what's in view is all there is to see: the

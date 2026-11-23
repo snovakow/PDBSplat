@@ -243,3 +243,17 @@ export function presetOf(options: ViewOptions, entry: EntryHolds) {
     return optionKeys.every((key) => look[key] === options[key] || !optionShows(key, look, entry))
   })
 }
+
+// What the Preset list reads once the options are no preset's
+export const customLook = 'custom'
+
+const presetNames = presets.map((preset) => preset.name)
+const namesWithCustom = [...presetNames, customLook]
+
+// The Preset list for a set of options and what the entry holds: what it reads, and what it lists, which is each
+// preset by its name, and custom only while that's what it reads, as choosing custom would set nothing. Each of the
+// two lists is the same array every time
+export function presetList(options: ViewOptions, entry: EntryHolds) {
+  const name = presetOf(options, entry)?.name
+  return name === undefined ? { reads: customLook, names: namesWithCustom } : { reads: name, names: presetNames }
+}

@@ -21,7 +21,7 @@ function shownForStyle(shownFor: ShownFor, style: Style) {
 // Whether the test a control shows by holds. One on another control fails while that control is hidden, so that a
 // hidden control takes with it the controls that depend on it
 function holds(dependence: Dependence, options: ViewOptions, entry: EntryHolds): boolean {
-  if ('opaque' in dependence) return isOpaque(options, entry) === dependence.opaque
+  if ('opaque' in dependence) return isOpaque(options, entry)
   if ('entryHolds' in dependence) return entry[dependence.entryHolds]
   const { option } = dependence
   if (!isOption(option)) throw new Error(`No option is named ${option}`)
@@ -29,7 +29,8 @@ function holds(dependence: Dependence, options: ViewOptions, entry: EntryHolds):
   const value = options[option]
   if ('is' in dependence) return value === dependence.is
   if ('isNot' in dependence) return value !== dependence.isNot
-  return typeof value === 'number' && value > dependence.above
+  if (typeof value !== 'number') return false
+  return 'above' in dependence ? value > dependence.above : value < dependence.below
 }
 
 // Whether the panel shows an option's control, for the options as they stand and what the entry holds

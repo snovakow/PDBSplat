@@ -84,10 +84,12 @@ void test('the truth table of the composites, the layers, opaque and back shell 
       if (layered) assert.equal(hasSolids(options) || hasGhosts(options, held), true, label)
       const surface = options.style === 'surface'
       assert.equal(isOpaque(options, held), (layered && !ghosts) || (surface && options.opacity === 1), label)
-      const hollow = ghosts || (surface && options.opacity < 1)
-      assert.equal(isBackShell(options, held), options.backShell && hollow, label)
-      // The back shell is never drawn where the view is opaque
-      assert.equal(isBackShell(options, held) && isOpaque(options, held), false, label)
+      // The back shell is for the spheres and the surface below full Opacity, whatever else is see-through
+      const hollow = (layered || surface) && options.opacity < 1
+      assert.equal(isBackShell(options), options.backShell && hollow, label)
+      // It's never drawn where the view is opaque, nor with a solid layer, which would hide it
+      assert.equal(isBackShell(options) && isOpaque(options, held), false, label)
+      assert.equal(isBackShell(options) && hasSolids(options), false, label)
     }
   }
   assert.equal(rows, 4 * 2 * 4 * 5 * 2 * 2 * 2)
@@ -111,19 +113,21 @@ void test('the rows the README names', () => {
   assert.equal(hasSolids(spheres), true)
   assert.equal(hasGhosts(spheres, held), false)
   assert.equal(isOpaque(spheres, held), true)
-  assert.equal(isBackShell({ ...spheres, backShell: true }, held), false)
+  assert.equal(isBackShell({ ...spheres, backShell: true }), false)
   // Below it, every atom is in the see-through layer, which the back shell is drawn under
   assert.equal(hasSolids({ ...spheres, opacity: 0.9 }), false)
   assert.equal(hasGhosts({ ...spheres, opacity: 0.9 }, held), true)
   assert.equal(isOpaque({ ...spheres, opacity: 0.9 }, held), false)
-  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true }, held), true)
-  assert.equal(isBackShell({ ...spheres, opacity: 0.9 }, held), false)
-  // Atoms that Focus fades are see-through over the solid ones in focus
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9, backShell: true }), true)
+  assert.equal(isBackShell({ ...spheres, opacity: 0.9 }), false)
+  // Atoms that Focus fades are see-through over the solid ones in focus, and one layer, as the back shell isn't
+  // drawn among solid spheres
   const faded: Options = { ...spheres, focus: 'ligands', fade: 0.15 }
   assert.equal(hasSolids(faded), true)
   assert.equal(hasGhosts(faded, held), true)
   assert.equal(isOpaque(faded, held), false)
-  assert.equal(isBackShell({ ...faded, backShell: true }, held), true)
+  assert.equal(isBackShell({ ...faded, backShell: true }), false)
+  assert.equal(isBackShell({ ...faded, opacity: 0.9, backShell: true }), true)
   // Fade at 0 hides them, and at 1 leaves them whole, so the spheres stay solid alone
   assert.equal(hasGhosts({ ...spheres, focus: 'backbone', fade: 0 }, held), false)
   assert.equal(isOpaque({ ...spheres, focus: 'backbone', fade: 0 }, held), true)
@@ -133,6 +137,8 @@ void test('the rows the README names', () => {
   // Every alternate at once is see-through by its occupancy, in an entry that has alternates; in one that has none
   // the setting draws nothing different, and the spheres stay solid
   assert.equal(hasGhosts({ ...spheres, conformations: 'all' }, held), true)
+  const everyAlternate: Options = { ...spheres, conformations: 'all', backShell: true }
+  assert.equal(isBackShell(everyAlternate), false)
   assert.equal(hasGhosts({ ...spheres, conformations: 'all' }, { alternates: false }), false)
   assert.equal(isOpaque({ ...spheres, conformations: 'all' }, { alternates: false }), true)
   // The spheres take no Blend, so they're layered the same whichever one the soft splats were left on
@@ -146,18 +152,18 @@ void test('the rows the README names', () => {
   assert.equal(hasSolids(soft), false)
   assert.equal(hasGhosts({ ...soft, opacity: 0.5 }, held), false)
   assert.equal(isOpaque(soft, held), false)
-  assert.equal(isBackShell({ ...soft, opacity: 0.5, backShell: true }, held), false)
+  assert.equal(isBackShell({ ...soft, opacity: 0.5, backShell: true }), false)
   // The surface is opaque at full Opacity, and takes the back shell below it
   const surface: Options = { ...spheres, style: 'surface' }
   assert.equal(isOpaque(surface, held), true)
   assert.equal(isOpaque({ ...surface, opacity: 0.9 }, held), false)
-  assert.equal(isBackShell({ ...surface, opacity: 0.9, backShell: true }, held), true)
-  assert.equal(isBackShell({ ...surface, opacity: 1, backShell: true }, held), false)
-  assert.equal(isBackShell({ ...surface, opacity: 0.9 }, held), false)
+  assert.equal(isBackShell({ ...surface, opacity: 0.9, backShell: true }), true)
+  assert.equal(isBackShell({ ...surface, opacity: 1, backShell: true }), false)
+  assert.equal(isBackShell({ ...surface, opacity: 0.9 }), false)
   // The field is neither
   const field: Options = { ...spheres, style: 'field' }
   assert.equal(isOpaque(field, held), false)
-  assert.equal(isBackShell({ ...field, opacity: 0.9, backShell: true }, held), false)
+  assert.equal(isBackShell({ ...field, opacity: 0.9, backShell: true }), false)
 })
 
 void test('the soft splats are summed by weight under the normal Blend, and nothing else is', () => {

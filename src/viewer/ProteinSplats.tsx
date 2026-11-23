@@ -115,7 +115,7 @@ export function ProteinSplats({ bounds }: Props) {
   const composite = useStore((s) => compositeOf(s.options))
   const solids = useStore((s) => hasSolids(s.options))
   const ghosts = useStore((s) => hasGhosts(s.options, entryHolds(s)))
-  const backShell = useStore((s) => isBackShell(s.options, entryHolds(s)))
+  const backShell = useStore((s) => isBackShell(s.options))
   // What the table is painted from, in one object that stands while its fields do. The shown atoms already follow
   // Hydrogens, Waters, Alternates and the model, which the alpha factors read as well
   const paint = useStore(

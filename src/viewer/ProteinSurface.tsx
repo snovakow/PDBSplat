@@ -5,7 +5,7 @@ import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { vdwRadius } from '../pdb/elements.ts'
 import type { Atom } from '../pdb/mmcif.ts'
 import type { ColorBy } from '../options.ts'
-import { entryHolds, shownAtoms, useStore, type PickTest } from '../store.ts'
+import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
@@ -52,7 +52,7 @@ export function ProteinSurface({ bounds }: Props) {
   const burial = useStore((s) => s.options.burial)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
-  const backShell = useStore((s) => isBackShell(s.options, entryHolds(s)))
+  const backShell = useStore((s) => isBackShell(s.options))
   const resolution = useStore((s) => s.options.resolution)
   const material = useRef<MeshBasicNodeMaterial | null>(null)
   const depthMaterial = useRef<MeshBasicNodeMaterial | null>(null)

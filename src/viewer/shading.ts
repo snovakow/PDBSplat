@@ -162,14 +162,16 @@ export const meshColor: ColorNode = Fn(() => {
 })()
 
 // The layers the spheres style draws its ellipsoids in, none of which is sorted, so that nothing flips as the view
-// turns. Each pixel shows the nearest solid surface, under the nearest see-through one in front of it, or, where no
-// solid lies under the pixel, the back shell, the farthest see-through surface, under the nearest see-through one:
+// turns. At full Opacity each pixel shows the nearest solid surface, under the nearest see-through one in front of
+// it. Below it nothing is solid, and each pixel shows the nearest see-through surface, over the back shell, the
+// farthest one, where that's on:
 // - solid: the atoms at full alpha, which write their surface's depth and hide what's behind them
 // - ghost: the atoms below full alpha, by Opacity, Fade or an alternate's occupancy, of which only the nearest
 //   surface under each pixel is drawn, blended over what's behind it. Its depth goes first, in ghostDepth, and its
 //   colour then passes only where it's that nearest surface
-// - back: the far side of the see-through atoms, where the pixel's ray leaves the last of them, under the ghost layer,
-//   wherever no solid is drawn. Its depth goes first too, in backDepth
+// - back: the far side of the see-through atoms, where the pixel's ray leaves the last of them, under the ghost layer.
+//   Its depth goes first too, in backDepth. It's never drawn with the solid layer, which would hide it wherever a
+//   solid lay under the pixel, in front of it or behind
 export type Layer = 'solid' | 'ghost' | 'ghostDepth' | 'back' | 'backDepth'
 
 // The alpha, of the atom's own times Opacity, from which an atom is solid, and the alpha below which it isn't drawn
@@ -248,9 +250,8 @@ function surfaceAlong(passage: Passage, front: boolean) {
 // that's farther, and a back layer's is where the ray leaves it.
 // While the back shell is drawn, the depth buffer is shared in halves: the back layers write the far half, turned
 // round, so that the usual test, which keeps the nearest, keeps the farthest leaving point instead, and every other
-// layer writes the near half, so that it passes over whatever the back layers left. The solids are drawn before the
-// back layers, in the near half, so the back shell never shows where a solid is drawn, even where the see-through
-// atoms' far side lies in front of it
+// layer writes the near half, so that it passes over whatever the back layers left. A solid would write the near
+// half too, and hide the back shell behind it and in front of it alike, which is why the two are never drawn together
 function layerDepth(layer: Layer, passage: Passage, front: boolean, halved: boolean): Node<'float'> {
   const depth = viewZToPerspectiveDepth(surfaceAlong(passage, front).mul(rayDirection.z), cameraNear, cameraFar)
   const gap = layer === 'ghostDepth' || layer === 'backDepth' ? layerGap : 0

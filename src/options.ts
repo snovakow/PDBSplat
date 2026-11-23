@@ -46,14 +46,14 @@ export interface EntryHolds {
 export const wholeEntry: EntryHolds = { models: true, alternates: true, waters: true, hydrogens: true }
 
 // What hides a control. Another control, by its key in the table: this one shows only while that control shows and its
-// value is the one given, isn't it, or is above it. Or what's drawn: this one shows only while everything drawn hides
-// what's behind it, or only while something drawn is see-through. Or the entry: this one shows only while the entry
-// holds what it acts on
+// value is the one given, isn't it, or is above or below it. Or what's drawn: this one shows only while everything
+// drawn hides what's behind it. Or the entry: this one shows only while the entry holds what it acts on
 export type Dependence =
   | { option: string; is: boolean }
   | { option: string; isNot: string }
   | { option: string; above: number }
-  | { opaque: boolean }
+  | { option: string; below: number }
+  | { opaque: true }
   | { entryHolds: keyof EntryHolds }
 
 interface Control<T> {
@@ -128,15 +128,15 @@ export const viewOptions = {
   scale: slider({ folder: 'Look', label: 'Size', default: 1, min: 0.25, max: 2, step: 0.05, shownFor: every }),
   // Opacity stops short of 0, where nothing would be drawn whatever else was set
   opacity: slider({ folder: 'Look', label: 'Opacity', default: 1, min: 0.05, max: 1, step: 0.05, shownFor: every }),
-  // The far side of the see-through spheres, or of the surface below full Opacity, drawn under the near side, so that
-  // the structure reads as hollow glass. Where everything drawn is opaque the far side is hidden, so the switch shows
-  // only while something is see-through
+  // The far side of the spheres or of the surface below full Opacity, drawn under the near side, so that the
+  // structure reads as hollow glass. At full Opacity the far side is hidden, or lies among solid spheres, where it
+  // isn't drawn, so the switch shows only below it
   backShell: toggle({
     folder: 'Look',
     label: 'Back shell',
     default: false,
     shownFor: spheresAndSurface,
-    shownWhile: { opaque: false },
+    shownWhile: { option: 'opacity', below: 1 },
   }),
   // The soft style's edge, from a Gaussian falloff at 0 to a flat disc at 1
   hardness: slider({ folder: 'Look', label: 'Hardness', default: 0, min: 0, max: 1, step: 0.05, shownFor: soft }),

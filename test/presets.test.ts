@@ -8,14 +8,14 @@ import {
   type EntryHolds,
   type ViewOptions,
 } from '../src/options.ts'
-import { presetOf, presets, withPreset } from '../src/presets.ts'
+import { customLook, presetList, presetOf, presets, withPreset } from '../src/presets.ts'
 import { optionShows } from '../src/shownOptions.ts'
 import { isBackShell, isOpaque, styleOf, styles } from '../src/viewer/styles.ts'
 
 // The presets: that each is a whole set of options the panel can show, that the page opens on one, that choosing one
 // sets its look and leaves the atoms shown and Spin as they were, that each is found from its own options, whatever
 // its hidden controls hold, and none once a control of the look moves, by the controls the panel shows for the entry,
-// and that every effect a preset turns on acts in its look
+// that the Preset list offers custom only while it reads it, and that every effect a preset turns on acts in its look
 
 // The options a preset leaves as they are: those that choose which atoms are shown, and Spin, which moves the view
 const keptOptions: string[] = ['hydrogens', 'waters', 'models', 'conformations', 'spin']
@@ -23,8 +23,6 @@ const keptOptions: string[] = ['hydrogens', 'waters', 'models', 'conformations',
 void test('each preset is a whole set of options the panel can show, under a name of its own', () => {
   const names = presets.map((preset) => preset.name)
   assert.equal(new Set(names).size, names.length)
-  // The panel lists custom beside them, for options that are no preset's
-  assert.ok(!names.includes('custom'))
   for (const { name, options } of presets) {
     assert.deepEqual(Object.keys(options).sort(), [...optionKeys].sort(), name)
     for (const key of optionKeys) {
@@ -137,24 +135,41 @@ void test('each preset is found from its own options, whatever it keeps, and non
 
 void test('a preset is found by the controls the panel shows for the entry', () => {
   // Alternates left on all, from an entry that has alternates, makes a see-through layer only in an entry that has
-  // them. In one that has none the glossy look stays solid, so its AO shows and its back shell hides
+  // them. In one that has none the glossy look stays solid, so its AO shows, and a move of it leaves the preset
   const glossy = presets[0]
   const noAlternates: EntryHolds = { ...wholeEntry, alternates: false }
   const aoMoved: ViewOptions = { ...glossy.options, conformations: 'all', ao: 0.5 }
-  const shellLeftOn: ViewOptions = { ...glossy.options, conformations: 'all', backShell: true }
   assert.equal(presetOf(aoMoved, noAlternates), undefined)
-  assert.equal(presetOf(shellLeftOn, noAlternates), glossy)
-  // In one that has them the alternates are see-through, so AO hides and the back shell shows
+  // In one that has them the alternates are see-through, so AO hides, and holds what it likes
   assert.equal(presetOf(aoMoved, wholeEntry), glossy)
-  assert.equal(presetOf(shellLeftOn, wholeEntry), undefined)
+  // The back shell hides at the look's full Opacity in either, so one left on is the preset's look still
+  const shellLeftOn: ViewOptions = { ...glossy.options, conformations: 'all', backShell: true }
+  assert.equal(presetOf(shellLeftOn, noAlternates), glossy)
+  assert.equal(presetOf(shellLeftOn, wholeEntry), glossy)
+})
+
+void test('the Preset list offers custom only while custom is what it reads', () => {
+  const names = presets.map((preset) => preset.name)
+  // No preset goes by the name the list reads for none
+  assert.equal(names.includes(customLook), false)
+  // A preset's look reads its name, among the presets alone: choosing custom would set nothing
+  for (const preset of presets) {
+    assert.deepEqual(presetList(preset.options, wholeEntry), { reads: preset.name, names })
+  }
+  // Once a control of the look has moved, the list reads custom, which it lists then, after the presets
+  const moved: ViewOptions = { ...presets[0].options, scale: 1.35 }
+  assert.deepEqual(presetList(moved, wholeEntry), { reads: customLook, names: [...names, customLook] })
+  // Either list is the same array each time, so that the panel builds its list again only when the names change
+  assert.equal(presetList(moved, wholeEntry).names, presetList({ ...moved, scale: 1.4 }, wholeEntry).names)
+  assert.equal(presetList(presets[0].options, wholeEntry).names, presetList(presets[1].options, wholeEntry).names)
 })
 
 void test('every effect a preset turns on acts in its look', () => {
   for (const { name, options } of presets) {
     // Ambient occlusion acts only while everything drawn is opaque
     if (options.ao > 0) assert.equal(isOpaque(options, wholeEntry), true, name)
-    // The back shell is drawn only under the see-through spheres or the see-through surface
-    if (options.backShell) assert.equal(isBackShell(options, wholeEntry), true, name)
+    // The back shell is drawn only below full Opacity, under the spheres or the surface
+    if (options.backShell) assert.equal(isBackShell(options), true, name)
     // Blend acts on the soft splats alone, and Detail on the splats
     if (options.blend !== 'normal') assert.equal(options.style, 'soft', name)
     if (options.detail !== 'auto') assert.equal(styleOf(options.style).kind, 'splats', name)

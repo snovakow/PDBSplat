@@ -65,7 +65,7 @@ function drawnBy(options: ViewOptions, entry: EntryHolds) {
     weighted: isWeighted(options),
     solids: hasSolids(options),
     ghosts: hasGhosts(options, entry),
-    backShell: isBackShell(options, entry),
+    backShell: isBackShell(options),
     occlusion: options.ao > 0 && isOpaque(options, entry),
   }
 }
@@ -105,11 +105,11 @@ void test('each control shows for its styles, and only while the other options l
       assert.equal(shows('highlight'), solid, label)
       assert.equal(shows('outline'), solid, label)
       assert.equal(shows('shininess'), solid && options.highlight > 0, label)
-      // The back shell while something is see-through, and ambient occlusion while nothing is: never both, and one
-      // of the two for the spheres and the surface
-      assert.equal(shows('backShell'), solid && !opaque, label)
+      // The back shell below full Opacity, and ambient occlusion while everything drawn is opaque: never both, and
+      // neither while the spheres at full Opacity have a see-through layer over their solid one
+      assert.equal(shows('backShell'), solid && options.opacity < 1, label)
       assert.equal(shows('ao'), solid && opaque, label)
-      assert.equal(shows('backShell') !== shows('ao'), solid, label)
+      assert.equal(shows('backShell') && shows('ao'), false, label)
       // A control hidden takes with it the one that depends on it: AO's radius goes with AO, whatever AO is set to
       assert.equal(shows('aoRadius'), shows('ao') && options.ao > 0, label)
       assert.equal(shows('bloomRadius'), options.bloom > 0, label)
@@ -189,9 +189,9 @@ void test('a hidden control changes nothing that is drawn, nor which controls sh
   assert.equal(hiddenMoves.size, moves.length)
 })
 
-void test("a control that waits on a slider shows from the slider's first step, and hides only at its low end", () => {
+void test("a control that waits on a slider shows from the slider's first step in from one end, and hides only at that end", () => {
   const waiting: (keyof ViewOptions)[] = ['shininess', 'aoRadius', 'bloomRadius', 'bloomThreshold']
-  // They're the controls that wait on a slider, each of them on its being above its low end
+  // They're the controls that wait on a slider's being above its low end
   const { highlight, ao, bloom } = viewOptions
   const lowEnds = new Map([
     ['highlight', highlight.min],
@@ -217,6 +217,12 @@ void test("a control that waits on a slider shows from the slider's first step, 
     assert.equal(optionShows(option, lowest, wholeEntry), false, option)
     assert.equal(optionShows(option, first, wholeEntry), true, option)
   }
+  // The back shell waits the other way: on Opacity being below its high end, from its first step down
+  const { opacity } = viewOptions
+  assert.deepEqual(viewOptions.backShell.shownWhile, { option: 'opacity', below: opacity.max })
+  const justBelow: ViewOptions = { ...defaultOptions, opacity: opacity.max - opacity.step }
+  assert.equal(optionShows('backShell', justBelow, wholeEntry), true)
+  assert.equal(optionShows('backShell', { ...defaultOptions, opacity: opacity.max }, wholeEntry), false)
 })
 
 void test('the opening look shows ambient occlusion, and neither the back shell nor a Blend', () => {
@@ -231,6 +237,10 @@ void test('the opening look shows ambient occlusion, and neither the back shell 
   assert.equal(optionShows('backShell', glass, wholeEntry), true)
   assert.equal(optionShows('ao', glass, wholeEntry), false)
   assert.equal(optionShows('aoRadius', glass, wholeEntry), false)
+  // At full Opacity the atoms that Focus fades are one see-through layer over the solid ones, which neither acts on
+  const faded: ViewOptions = { ...defaultOptions, focus: 'ligands', fade: 0.15 }
+  assert.equal(optionShows('backShell', faded, wholeEntry), false)
+  assert.equal(optionShows('ao', faded, wholeEntry), false)
   // Alternates left on all draws nothing see-through in an entry that has none, so ambient occlusion stays
   const all: ViewOptions = { ...defaultOptions, conformations: 'all' }
   assert.equal(optionShows('ao', all, wholeEntry), false)
