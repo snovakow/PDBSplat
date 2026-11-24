@@ -8,9 +8,9 @@ PDBSplat renders proteins from the [Protein Data Bank](https://www.rcsb.org) as 
 
 ## What it shows
 
-The page opens on 4HHB, human haemoglobin: four protein chains, each holding a heme with its iron. The panel lists five more examples, from small to large: 1CRN, crambin, a small plant protein of 327 atoms; 1BNA, a short stretch of DNA; 1EJG, crambin again with its hydrogens, alternate conformations and the directions each atom moves in; 1D3Z, ubiquitin as solved by NMR, in several models; and 1IGT, an intact mouse antibody of almost 13,000 atoms, four protein chains in a Y. Any other entry loads by its four-character PDB ID. You can find more by searching [rcsb.org](https://www.rcsb.org).
+The page opens on 1IGT, an intact mouse antibody of almost 13,000 atoms: four protein chains in a Y, with two sugar chains in its stem. The panel lists five more examples, from small to large: 1CRN, crambin, a small plant protein of 327 atoms; 1BNA, a short stretch of DNA; 1EJG, crambin again with its hydrogens, alternate conformations and the directions each atom moves in; 1D3Z, ubiquitin as solved by NMR, in several models; and 4HHB, human haemoglobin, four protein chains, each holding a heme with its iron. Any other entry loads by its four-character PDB ID. You can find more by searching [rcsb.org](https://www.rcsb.org).
 
-Each atom is one round splat, sized by its element's van der Waals radius. The page opens on the first of the panel's presets, glossy: the splats shaded as solid, glossy spheres, each chain in its own colour, the buried atoms and the far side of the structure in shadow, ambient occlusion darkening the contacts between atoms, and a glow around the brightest highlights; the panel turns each of these down or off, or sets another look at once. Coloured by element instead, each atom takes its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, phosphorus and iron orange. Where an entry holds several models, as NMR structures do, PDBSplat starts on the first, and where residues have alternate conformations, on the first of each; **Models** and **Alternates** in the panel show the rest. Each entry is centred and framed to fit the window as it loads, on the atoms it starts with, so showing more of them never moves it.
+Each atom is one round splat, sized by its element's van der Waals radius. The page opens on the first of the panel's presets, space-filling: the splats shaded as solid, glossy spheres, each chain in its own colour, the buried atoms and the far side of the structure in shadow, ambient occlusion darkening the contacts between atoms, and a glow around the brightest highlights; the panel turns each of these down or off, or sets another look at once. Coloured by element instead, each atom takes its element's CPK colour: carbon grey, nitrogen blue, oxygen red, sulphur yellow, phosphorus and iron orange. Where an entry holds several models, as NMR structures do, PDBSplat starts on the first, and where residues have alternate conformations, on the first of each; **Models** and **Alternates** in the panel show the rest. As it loads, each entry is centred, turned about its upright axis to show its broadest side, and framed to fit the window, on the atoms it starts with, so showing more of them never moves it.
 
 ## Controls
 
@@ -18,17 +18,18 @@ Each atom is one round splat, sized by its element's van der Waals radius. The p
 - **Point** at an atom, in any style, and a label beside the pointer names it: its atom name and element, and its alternate conformation if it has one; its residue, with any insertion code, its chain, and its model in an entry with several; its B-factor, and its occupancy when the atom is only partly there. The label hides while you drag.
 - **Click** or tap an atom to pick it, and click empty space to let it go. Even a faint atom can be picked, but not one that Focus has faded far out.
 - The **panel** at the top right. Its folders hide the controls the chosen style doesn't use, and any that the other settings or the loaded entry leave nothing to change, so that no control shows that would draw the same picture wherever you set it. Atoms and Scene start folded: click a folder's name to open or close it.
-  - **Preset**, at the top, sets every control of the look at once, and leaves **Hydrogens**, **Waters**, **Models**, **Alternates** and **Spin** as they are. Once a control that shows has moved from the preset's setting, the list reads custom, which it lists only then, and choosing the preset again puts its look back. It holds ten looks, chosen by eye on haemoglobin:
-    - **glossy**, the look the page opens on
-    - **ink**, flat colours outlined in black, as in an illustration
-    - **clay**, the surface in matte colour, shaded in its grooves
-    - **heat**, solid spheres coloured by their B-factors and swollen by them, so that the mobile loops bulge red around a still, blue core
-    - **glass**, see-through spheres two layers deep
-    - **jelly beans**, one glossy blob per residue
-    - **pearls**, small glossy beads
-    - **necklace**, the backbone alone, in glossy beads coloured along each chain
-    - **fairy lights**, the backbone as small, glowing lights
-    - **galaxy**, every atom a point of light in its B-factor's colour
+  - **Preset**, at the top, sets every control of the look at once, and leaves **Hydrogens**, **Waters**, **Models**, **Alternates** and **Spin** as they are. Once a control that shows has moved from the preset's setting, the list reads custom, which it lists only then, and choosing the preset again puts its look back. It holds eleven looks, each named for what it draws, and chosen by eye on the antibody to show off one thing the renderer does:
+    - **space-filling**, the look the page opens on: every atom a solid, glossy sphere of its van der Waals radius
+    - **B-factor**, solid spheres coloured by their B-factors and swollen by them, so that the mobile loops bulge red around a still, blue core
+    - **residue ellipsoids**, one solid, glossy ellipsoid per residue, the merged shape of its atoms
+    - **transparent shell**, see-through spheres two layers deep: the nearest surface over the back shell
+    - **backbone focus**, the backbone as solid beads coloured along each chain, inside a see-through layer of the side chains
+    - **ligand focus**, the ligands and the residues that hold them solid and bright, inside a dim, see-through layer of everything else. In an entry without ligands every atom stays solid
+    - **molecular surface**, the surface in matte colour, shaded in its grooves
+    - **outlined surface**, the surface in flat colour with its folds inked in black, as in an illustration
+    - **Gaussian splats**, every atom a soft Gaussian, summed into a cloud
+    - **backbone glow**, the backbone alone, as small Gaussians that add their light together, coloured along each chain
+    - **density field**, the atoms' density as a cloud, coloured along each chain
   - **Example** loads one of the six examples, and **PDB ID** and **Load** fetch any other entry.
   - **Look:**
     - **Style** draws soft Gaussian splats, or hard-edged ones shaded as spheres, which at full size make a space-filling model, or a surface: a smooth molecular surface meshed by marching cubes, on which the atoms' colours meet along clean boundaries, or a field: the atoms' density drawn as a cloud, denser where atoms crowd and fading away at the structure's edge, coloured by the atom nearest each point.
