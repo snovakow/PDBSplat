@@ -14,8 +14,8 @@ interface Props {
   bounds: Bounds
 }
 
-// A new entry is framed whole, looking down the z axis at its centroid, whatever the style, and the near plane follows
-// the camera
+// A new entry is framed whole, looking level at its centroid from the side it's broadest, whatever the style, and the
+// near plane follows the camera
 export function Framing({ controlsRef, bounds }: Props) {
   const get = useThree((s) => s.get)
   const atoms = useStore((s) => s.atoms)
@@ -29,7 +29,9 @@ export function Framing({ controlsRef, bounds }: Props) {
     const halfFovX = Math.atan(Math.tan(halfFov) * camera.aspect)
     const distance = (bounds.radius / Math.sin(Math.min(halfFov, halfFovX))) * frameMargin
 
-    camera.position.set(0, 0, distance)
+    // Spin turns the view about the y axis, so the camera opens on that turn where the structure shows its broadest
+    // side, rather than wherever the file's z axis happens to point
+    camera.position.set(distance * Math.sin(bounds.broadside), 0, distance * Math.cos(bounds.broadside))
     camera.far = distance * 4 + bounds.radius
     camera.updateProjectionMatrix()
     // Zooming out stops well before the far plane would clip the structure
