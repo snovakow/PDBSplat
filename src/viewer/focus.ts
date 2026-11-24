@@ -89,6 +89,16 @@ function nucleotideResidues(entry: readonly Atom[]) {
   return models
 }
 
+// Whether an atom is a ligand's: of a residue outside the polymer chains, other than a water
+function isLigand(atom: Atom) {
+  return !atom.polymer && !atom.water
+}
+
+// Whether an entry has ligands, in any of its models, for the ligands' Focus to keep. One without has no binding site
+export function hasLigands(entry: readonly Atom[]) {
+  return entry.some((atom) => atom.firstConformation && isLigand(atom))
+}
+
 // Each entry's binding sites, kept beside its atoms, which are never changed
 const bindingSites = new WeakMap<readonly Atom[], Map<number, Set<string>> | null>()
 
@@ -100,7 +110,7 @@ export function bindingSite(entry: readonly Atom[]) {
   if (site === undefined) {
     const models = new Map<number, Set<string>>()
     for (const [model, atoms] of firstConformations(entry)) {
-      const ligands = atoms.filter((atom) => !atom.polymer && !atom.water)
+      const ligands = atoms.filter(isLigand)
       if (ligands.length === 0) continue
       const residues = atoms.map(residueKey)
       const keys = new Set<string>()

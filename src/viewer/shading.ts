@@ -167,8 +167,8 @@ export const meshColor: ColorNode = Fn(() => {
 // farthest one, where that's on:
 // - solid: the atoms at full alpha, which write their surface's depth and hide what's behind them
 // - ghost: the atoms below full alpha, by Opacity, Fade or an alternate's occupancy, of which only the nearest
-//   surface under each pixel is drawn, blended over what's behind it. Its depth goes first, in ghostDepth, and its
-//   colour then passes only where it's that nearest surface
+//   surface under each pixel is drawn, laid over what's behind it, which it hides by its cover, below. Its depth goes
+//   first, in ghostDepth, and its colour then passes only where it's that nearest surface
 // - back: the far side of the see-through atoms, where the pixel's ray leaves the last of them, under the ghost layer.
 //   Its depth goes first too, in backDepth. It's never drawn with the solid layer, which would hide it wherever a
 //   solid lay under the pixel, in front of it or behind
@@ -178,6 +178,9 @@ export type Layer = 'solid' | 'ghost' | 'ghostDepth' | 'back' | 'backDepth'
 // at all, which is half a step of the paint's byte: Fade at 0 hides the atoms out of focus
 const solidAlpha = 0.999
 const leastAlpha = 0.002
+// The exponent a display encodes light by, which is near enough how the eye weighs it: a tenth of an atom's light
+// looks a third as bright as all of it
+const displayGamma = 2.2
 // How bright a cut ellipsoid's flat face is, of its atom's colour
 const capShade = 0.6
 // How much farther a depth layer writes its depth than its colour layer then tests with, so that the colour passes
@@ -190,6 +193,16 @@ const layerGap = 2e-6
 const capDish = 0.1
 // The least half-chord to divide by, in ångströms, where a ray passes outside the outline
 const leastChord = 1e-6
+
+// How much of what's behind it a see-through surface hides, from the share of its own light that Fade or an
+// alternate's occupancy leaves it: as much as it looks to be there. Hiding only that share, a faint atom shows plainly
+// against the dark and yet leaves a bright solid behind it all but untouched, so that the solid reads as lying in
+// front of it. So it hides what it would were the two blended as the display encodes them, as the eye weighs them:
+// nothing at 0, everything at 1, and more than its own share between, six tenths at a tenth. A power of a number
+// below 0 is undefined, so the share's own power is kept from rounding past 1
+function coverOf(share: Node<'float'>) {
+  return pow(max(pow(share, 1 / displayGamma).oneMinus(), 0), displayGamma).oneMinus()
+}
 
 // A layer's colour node: the surface's shading where the atom belongs to the layer, and nothing elsewhere. Clip cuts
 // each ellipsoid where it crosses the cut: what's in front goes, and a front layer shows the solid's flat face there,
@@ -229,7 +242,12 @@ function layerColor(layer: Layer, passage: Passage, front: boolean): ColorNode {
     const shaded = rgb.mul(depthShade(along.mul(rayDirection.z.negate())))
     // A solid hides what's behind it, so its alpha is its edge's fade alone, which sets how much of each pixel it
     // covers
-    return vec4(shaded, layer === 'solid' ? edge : alpha.mul(edge))
+    if (layer === 'solid') return vec4(shaded, edge)
+    // A see-through surface adds its alpha's share of its colour, and hides its cover of what's behind it: the
+    // blend weighs its colour by the alpha it's given, so the colour is dimmed by as much as the cover exceeds its
+    // share. Opacity thins the light and the cover alike, as glass that shows its far side through its near one
+    const cover = coverOf(ellipsoidPaint.a).toVar()
+    return vec4(shaded.mul(ellipsoidPaint.a.div(cover)), cover.mul(opacity).mul(edge))
   })()
 }
 

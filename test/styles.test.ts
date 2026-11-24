@@ -8,6 +8,7 @@ import {
   isBackShell,
   isOpaque,
   isWeighted,
+  leavesOutOfFocus,
   styleOf,
   styles,
   type Composite,
@@ -55,25 +56,30 @@ function composite(options: Options): Composite | null {
   return options.blend === 'glow' ? 'glow' : 'summed'
 }
 
-// Whether some atom is see-through without being hidden: below full Opacity, faded by Focus to more than nothing, or
-// an alternate at its occupancy's share, in an entry that has alternates
-function seeThrough(options: Options, alternates: boolean) {
-  const faded = options.focus !== 'all' && options.fade > 0 && options.fade < 1
+// Whether some atom is see-through without being hidden: below full Opacity, faded by Focus to more than nothing,
+// which the ligands' Focus does only in an entry that has ligands, or an alternate at its occupancy's share, in an
+// entry that has alternates
+function seeThrough(options: Options, alternates: boolean, ligands: boolean) {
+  const outOfFocus = options.focus !== 'all' && (options.focus !== 'ligands' || ligands)
+  const faded = outOfFocus && options.fade > 0 && options.fade < 1
   return options.opacity < 1 || faded || (options.conformations === 'all' && alternates)
 }
+
+// What an entry may hold of what the layers ask of it, in every combination
+const entries = [false, true].flatMap((alternates) => [false, true].map((ligands) => ({ alternates, ligands })))
 
 void test('the truth table of the composites, the layers, opaque and back shell over every combination', () => {
   let rows = 0
   let layeredRows = 0
   for (const options of combinations()) {
-    for (const alternates of [false, true]) {
+    for (const held of entries) {
       rows++
-      const held = { alternates }
+      const { alternates, ligands } = held
       const expected = composite(options)
       const layered = expected === 'layered'
       if (layered) layeredRows++
-      const label = `${JSON.stringify(options)}, alternates ${alternates}`
-      const ghosts = layered && seeThrough(options, alternates)
+      const label = `${JSON.stringify(options)}, alternates ${alternates}, ligands ${ligands}`
+      const ghosts = layered && seeThrough(options, alternates, ligands)
       assert.equal(compositeOf(options), expected, label)
       // Every splat style has a composite, none of which sorts its splats, and the surface and the field have none
       assert.equal(expected !== null, styleOf(options.style).kind === 'splats', label)
@@ -92,14 +98,26 @@ void test('the truth table of the composites, the layers, opaque and back shell 
       assert.equal(isBackShell(options) && hasSolids(options), false, label)
     }
   }
-  assert.equal(rows, 4 * 2 * 4 * 5 * 2 * 2 * 2)
+  assert.equal(rows, 4 * 2 * 4 * 5 * 2 * 2 * 4)
   // Layered: the spheres, whatever the rest, the Blend among it
-  assert.equal(layeredRows, 2 * 4 * 5 * 2 * 2 * 2)
+  assert.equal(layeredRows, 2 * 4 * 5 * 2 * 2 * 4)
+})
+
+void test('Focus leaves atoms out of focus but on all, and the ligands\' only in an entry that has ligands', () => {
+  for (const ligands of [false, true]) {
+    assert.equal(leavesOutOfFocus({ focus: 'all' }, { ligands }), false)
+    assert.equal(leavesOutOfFocus({ focus: 'ligands' }, { ligands }), ligands)
+    assert.equal(leavesOutOfFocus({ focus: 'backbone' }, { ligands }), true)
+    // A picked Focus counts before any atom is picked
+    assert.equal(leavesOutOfFocus({ focus: 'residue' }, { ligands }), true)
+    assert.equal(leavesOutOfFocus({ focus: 'chain' }, { ligands }), true)
+  }
 })
 
 void test('the rows the README names', () => {
-  // An entry with alternates to draw
-  const held = { alternates: true }
+  // An entry with alternates to draw and ligands to keep in focus, and one with neither
+  const held = { alternates: true, ligands: true }
+  const bare = { alternates: false, ligands: false }
   const spheres: Options = {
     style: 'spheres',
     blend: 'normal',
@@ -128,6 +146,11 @@ void test('the rows the README names', () => {
   assert.equal(isOpaque(faded, held), false)
   assert.equal(isBackShell({ ...faded, backShell: true }), false)
   assert.equal(isBackShell({ ...faded, opacity: 0.9, backShell: true }), true)
+  // In an entry without ligands their Focus keeps every atom, so nothing is faded and the spheres stay solid alone,
+  // while the backbone's Focus fades its side chains as in any entry
+  assert.equal(hasGhosts(faded, bare), false)
+  assert.equal(isOpaque(faded, bare), true)
+  assert.equal(hasGhosts({ ...faded, focus: 'backbone' }, bare), true)
   // Fade at 0 hides them, and at 1 leaves them whole, so the spheres stay solid alone
   assert.equal(hasGhosts({ ...spheres, focus: 'backbone', fade: 0 }, held), false)
   assert.equal(isOpaque({ ...spheres, focus: 'backbone', fade: 0 }, held), true)
@@ -139,8 +162,8 @@ void test('the rows the README names', () => {
   assert.equal(hasGhosts({ ...spheres, conformations: 'all' }, held), true)
   const everyAlternate: Options = { ...spheres, conformations: 'all', backShell: true }
   assert.equal(isBackShell(everyAlternate), false)
-  assert.equal(hasGhosts({ ...spheres, conformations: 'all' }, { alternates: false }), false)
-  assert.equal(isOpaque({ ...spheres, conformations: 'all' }, { alternates: false }), true)
+  assert.equal(hasGhosts({ ...spheres, conformations: 'all' }, bare), false)
+  assert.equal(isOpaque({ ...spheres, conformations: 'all' }, bare), true)
   // The spheres take no Blend, so they're layered the same whichever one the soft splats were left on
   const leftOnGlow: Options = { ...spheres, blend: 'glow' }
   assert.equal(compositeOf(leftOnGlow), 'layered')

@@ -33,8 +33,8 @@ const focuses: Pick<ViewOptions, 'focus' | 'fade'>[] = [
 ]
 const alternates: Conformations[] = ['first', 'all']
 
-// An entry that holds nothing a control acts on: one model, no alternates, no waters and no hydrogens
-const bareEntry: EntryHolds = { models: false, alternates: false, waters: false, hydrogens: false }
+// An entry that holds nothing a control acts on: one model, no alternates, no waters, no hydrogens and no ligands
+const bareEntry: EntryHolds = { models: false, alternates: false, waters: false, hydrogens: false, ligands: false }
 
 // The options the tests of the controls read, in every combination, over the opening look
 function* combinations(): Generator<ViewOptions> {
@@ -115,7 +115,9 @@ void test('each control shows for its styles, and only while the other options l
       assert.equal(shows('bloomRadius'), options.bloom > 0, label)
       assert.equal(shows('bloomThreshold'), options.bloom > 0, label)
       assert.equal(shows('thermal'), splats && !options.ellipsoids, label)
-      assert.equal(shows('fade'), splats && options.focus !== 'all', label)
+      // Fade only while Focus leaves atoms out of focus, which the ligands' doesn't in an entry without ligands
+      const outOfFocus = options.focus !== 'all' && (options.focus !== 'ligands' || entry.ligands)
+      assert.equal(shows('fade'), splats && outOfFocus, label)
       // The four that choose the atoms shown, each only for an entry that holds what it chooses among
       assert.equal(shows('hydrogens'), entry.hydrogens, label)
       assert.equal(shows('waters'), entry.waters, label)
@@ -241,6 +243,17 @@ void test('the opening look shows ambient occlusion, and neither the back shell 
   const faded: ViewOptions = { ...defaultOptions, focus: 'ligands', fade: 0.15 }
   assert.equal(optionShows('backShell', faded, wholeEntry), false)
   assert.equal(optionShows('ao', faded, wholeEntry), false)
+  // In an entry without ligands their Focus keeps every atom solid: Fade, with nothing to fade, hides, and ambient
+  // occlusion stays. The backbone's Focus fades its side chains in any entry
+  assert.equal(optionShows('fade', faded, wholeEntry), true)
+  assert.equal(optionShows('fade', faded, bareEntry), false)
+  assert.equal(optionShows('ao', faded, bareEntry), true)
+  assert.equal(optionShows('aoRadius', faded, bareEntry), true)
+  const sideChainsFaded: ViewOptions = { ...faded, focus: 'backbone' }
+  assert.equal(optionShows('fade', sideChainsFaded, bareEntry), true)
+  assert.equal(optionShows('ao', sideChainsFaded, bareEntry), false)
+  // Fade is the splats' alone, so the surface hides it whatever Focus was left on
+  assert.equal(optionShows('fade', { ...faded, style: 'surface' }, wholeEntry), false)
   // Alternates left on all draws nothing see-through in an entry that has none, so ambient occlusion stays
   const all: ViewOptions = { ...defaultOptions, conformations: 'all' }
   assert.equal(optionShows('ao', all, wholeEntry), false)

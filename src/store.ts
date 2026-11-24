@@ -4,6 +4,7 @@ import { shallow } from 'zustand/shallow'
 import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
 import { defaultAtoms, type Atom } from './pdb/mmcif.ts'
+import { hasLigands } from './viewer/focus.ts'
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
 export const examples = [
@@ -95,7 +96,7 @@ export function shownAtoms(state: Pick<State, 'atoms' | 'options' | 'models' | '
 let lastHeld: { atoms: readonly Atom[]; models: readonly number[]; holds: EntryHolds } | null = null
 
 // What the entry holds that a control acts on: more than one model, atoms recorded in alternate positions, waters,
-// and hydrogens. Before an entry loads it holds none of them
+// hydrogens, and ligands. Before an entry loads it holds none of them
 export function entryHolds({ atoms, models }: Pick<State, 'atoms' | 'models'>): EntryHolds {
   if (lastHeld && lastHeld.atoms === atoms && lastHeld.models === models) return lastHeld.holds
   const holds: EntryHolds = {
@@ -103,6 +104,7 @@ export function entryHolds({ atoms, models }: Pick<State, 'atoms' | 'models'>): 
     alternates: atoms.some((atom) => atom.altLoc !== ''),
     waters: atoms.some((atom) => atom.water),
     hydrogens: atoms.some((atom) => atom.hydrogen),
+    ligands: hasLigands(atoms),
   }
   lastHeld = { atoms, models, holds }
   return holds

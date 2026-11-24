@@ -58,18 +58,24 @@ export function isWeighted(options: Pick<ViewOptions, 'style' | 'blend'>) {
 // The options that decide which layers the layered spheres are drawn in
 type LayerOptions = Pick<ViewOptions, 'style' | 'opacity' | 'focus' | 'fade' | 'conformations'>
 
-// Whether an entry has alternates to draw, which is all the layers ask of it
-type Alternates = Pick<EntryHolds, 'alternates'>
+// What the layers ask of an entry: whether it has alternates to draw, and ligands for Focus to keep
+type Held = Pick<EntryHolds, 'alternates' | 'ligands'>
+
+// Whether Focus leaves atoms of the entry out of focus, for Fade to act on: any Focus but all, though the ligands'
+// only in an entry that has ligands, as one without keeps every atom in focus. A picked Focus counts before any atom
+// is picked, so that a pick paints the atoms without building them again
+export function leavesOutOfFocus(options: Pick<ViewOptions, 'focus'>, entry: Pick<EntryHolds, 'ligands'>) {
+  return options.focus !== 'all' && (options.focus !== 'ligands' || entry.ligands)
+}
 
 // Whether the layered spheres have a see-through layer: below full Opacity, where every atom is see-through, or with
 // atoms that Focus fades but doesn't hide, or with Alternates on all in an entry that has them, whose atoms keep their
-// occupancy's share. Fade at 0 hides the atoms out of focus, and at 1 leaves them whole, so neither makes a layer. A
-// picked Focus counts before any atom is picked, so that a pick paints the atoms without building them again
-export function hasGhosts(options: LayerOptions, entry: Alternates) {
+// occupancy's share. Fade at 0 hides the atoms out of focus, and at 1 leaves them whole, so neither makes a layer
+export function hasGhosts(options: LayerOptions, entry: Held) {
   return (
     isLayered(options) &&
     (options.opacity < 1 ||
-      (options.focus !== 'all' && options.fade > 0 && options.fade < 1) ||
+      (leavesOutOfFocus(options, entry) && options.fade > 0 && options.fade < 1) ||
       (options.conformations === 'all' && entry.alternates))
   )
 }
@@ -94,6 +100,6 @@ export function isBackShell(options: BackShellOptions) {
 
 // Whether everything drawn hides what's behind it, so that the depth of what's in view is all there is to see: the
 // layered spheres with no see-through layer, or the surface at full Opacity
-export function isOpaque(options: LayerOptions, entry: Alternates) {
+export function isOpaque(options: LayerOptions, entry: Held) {
   return (hasSolids(options) && !hasGhosts(options, entry)) || (options.style === 'surface' && options.opacity === 1)
 }

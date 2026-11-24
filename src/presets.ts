@@ -114,7 +114,8 @@ export const presets: readonly Preset[] = [
     },
   },
   // The backbone in focus, as solid beads coloured along each chain, inside the see-through layer of the side chains
-  // around it: the nearest faded surface under each pixel, over the solid ones
+  // around it: the nearest faded surface under each pixel, as faint dark glass that dims the beads it lies in front
+  // of, so that a bead reads as deep in the structure as it is
   {
     name: 'backbone focus',
     options: {
@@ -123,13 +124,15 @@ export const presets: readonly Preset[] = [
       shininess: 40,
       colorBy: 'rainbow',
       focus: 'backbone',
+      fade: 0.05,
       depthCue: 0.5,
       bloom: 0.6,
       bloomThreshold: 0.85,
     },
   },
-  // The ligands and the residues that hold them in focus, solid and bright, with the rest of the structure a dim,
-  // see-through layer around them. An entry without ligands keeps every atom in focus, and so solid
+  // The ligands and the residues that hold them in focus, solid and bright, with the rest of the structure faint dark
+  // glass around them, which dims them where it lies in front of them. An entry without ligands keeps every atom in
+  // focus, and so solid, which is where the look's ambient occlusion acts
   {
     name: 'ligand focus',
     options: {
@@ -137,9 +140,11 @@ export const presets: readonly Preset[] = [
       highlight: 0.7,
       shininess: 40,
       focus: 'ligands',
+      fade: 0.05,
       depthCue: 0.5,
       bloom: 1.2,
       bloomThreshold: 0.85,
+      ao: 1,
     },
   },
   // The molecular surface, softly lit, its grooves shaded by burial and ambient occlusion

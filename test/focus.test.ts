@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { residueKey, type Atom } from '../src/pdb/mmcif.ts'
 import type { Focus } from '../src/options.ts'
-import { bindingSite, focusTest, pickedKey } from '../src/viewer/focus.ts'
+import { bindingSite, focusTest, hasLigands, pickedKey } from '../src/viewer/focus.ts'
 
 // Which atoms each Focus keeps, on small residue sets built here
 
@@ -95,12 +95,15 @@ void test('the ligands focus keeps each ligand, the residues within 5 Å of it a
   assert.deepEqual([...(site.get(1) ?? [])].sort(), ['A 142 ', 'A 301 ', 'A 87 '])
   // The site is kept beside the entry
   assert.equal(bindingSite(entry), site)
+  assert.equal(hasLigands(entry), true)
 })
 
 void test('an entry without ligands keeps every atom, as does a model without them', () => {
   const protein = [...residue('ALA', 1, ['N', 'CA']), ...residue('HOH', 301, ['O'], { water: true, polymer: false })]
   assert.equal(focusTest(protein, 'ligands', null), null)
   assert.equal(bindingSite(protein), null)
+  assert.equal(hasLigands(protein), false)
+  assert.equal(hasLigands([]), false)
   const twoModels = [
     ...residue('HEM', 142, ['FE'], { polymer: false }),
     ...residue('LEU', 88, ['N'], { x: 9 }),
@@ -110,6 +113,14 @@ void test('an entry without ligands keeps every atom, as does a model without th
   const kept = focusTest(twoModels, 'ligands', null)
   assert.ok(kept)
   assert.equal(kept(twoModels[2]), true)
+  // An entry has ligands where any of its models does, which is where it has a binding site
+  assert.equal(hasLigands(twoModels), true)
+  assert.equal(hasLigands(twoModels.slice(1)), false)
+  assert.equal(bindingSite(twoModels.slice(1)), null)
+  // As the binding site is, they're found among the first conformations
+  const laterOnly = residue('HEM', 142, ['FE'], { polymer: false, altLoc: 'B', firstConformation: false })
+  assert.equal(hasLigands(laterOnly), false)
+  assert.equal(bindingSite(laterOnly), null)
 })
 
 void test('the picked residue and chain keep the picked atom\'s, and nothing is kept out without a pick', () => {

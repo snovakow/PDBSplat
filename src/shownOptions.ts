@@ -6,7 +6,7 @@ import {
   type ShownFor,
   type ViewOptions,
 } from './options.ts'
-import { isOpaque, styleOf, type Style } from './viewer/styles.ts'
+import { isOpaque, leavesOutOfFocus, styleOf, type Style } from './viewer/styles.ts'
 
 // Which controls the panel shows for a set of options and an entry: each for the styles its row of the table names,
 // and only while the other options and the entry leave it something to change, by the test its row gives. So a hidden
@@ -19,9 +19,10 @@ function shownForStyle(shownFor: ShownFor, style: Style) {
 }
 
 // Whether the test a control shows by holds. One on another control fails while that control is hidden, so that a
-// hidden control takes with it the controls that depend on it
+// hidden control takes with it the controls that depend on it, as the one on what Focus leaves out does with Focus
 function holds(dependence: Dependence, options: ViewOptions, entry: EntryHolds): boolean {
   if ('opaque' in dependence) return isOpaque(options, entry)
+  if ('outOfFocus' in dependence) return optionShows('focus', options, entry) && leavesOutOfFocus(options, entry)
   if ('entryHolds' in dependence) return entry[dependence.entryHolds]
   const { option } = dependence
   if (!isOption(option)) throw new Error(`No option is named ${option}`)

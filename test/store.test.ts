@@ -139,13 +139,14 @@ void test('shownAtoms gives the same array while the entry, Hydrogens, Waters, A
   assert.deepEqual(shownAtoms(useStore.getState()), [])
 })
 
-void test('an entry holds models, alternates, waters and hydrogens by its atoms and models', () => {
+void test('an entry holds models, alternates, waters, hydrogens and ligands by its atoms and models', () => {
   const plain = [atom({})]
   assert.deepEqual(entryHolds({ atoms: plain, models: [1] }), {
     models: false,
     alternates: false,
     waters: false,
     hydrogens: false,
+    ligands: false,
   })
   // Before an entry loads it holds none of them
   assert.deepEqual(entryHolds({ atoms: [], models: [] }), entryHolds({ atoms: plain, models: [1] }))
@@ -155,6 +156,7 @@ void test('an entry holds models, alternates, waters and hydrogens by its atoms 
     atom({ altLoc: 'A' }),
     atom({ altLoc: 'B', firstConformation: false }),
     atom({ model: 2 }),
+    atom({ residueName: 'HEM', polymer: false }),
   ]
   const models = [1, 2]
   const holds = entryHolds({ atoms: full, models })
@@ -166,6 +168,9 @@ void test('an entry holds models, alternates, waters and hydrogens by its atoms 
   assert.equal(entryHolds({ atoms: [full[0]], models: [1] }).waters, false)
   assert.equal(entryHolds({ atoms: [full[1]], models: [1] }).waters, true)
   assert.equal(entryHolds({ atoms: [full[2]], models: [1] }).alternates, true)
+  // A water is outside the polymer chains, as a ligand is, and isn't one
+  assert.equal(entryHolds({ atoms: [full[1]], models: [1] }).ligands, false)
+  assert.equal(entryHolds({ atoms: [full[5]], models: [1] }).ligands, true)
   assert.equal(entryHolds({ atoms: plain, models }).models, true)
 })
 

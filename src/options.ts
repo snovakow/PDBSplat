@@ -34,26 +34,29 @@ export type Folder = 'Look' | 'Colour' | 'Atoms' | 'Scene'
 export type ShownFor = 'every' | { kind: StyleKind } | { styles: readonly Style[] }
 
 // What an entry holds that a control acts on: more than one model, residues recorded in more than one conformation,
-// waters, and hydrogens
+// waters, hydrogens, and ligands, its residues outside polymer chains other than waters
 export interface EntryHolds {
   models: boolean
   alternates: boolean
   waters: boolean
   hydrogens: boolean
+  ligands: boolean
 }
 
 // An entry that holds all of them, for which no control hides by the entry
-export const wholeEntry: EntryHolds = { models: true, alternates: true, waters: true, hydrogens: true }
+export const wholeEntry: EntryHolds = { models: true, alternates: true, waters: true, hydrogens: true, ligands: true }
 
 // What hides a control. Another control, by its key in the table: this one shows only while that control shows and its
 // value is the one given, isn't it, or is above or below it. Or what's drawn: this one shows only while everything
-// drawn hides what's behind it. Or the entry: this one shows only while the entry holds what it acts on
+// drawn hides what's behind it, or only while Focus leaves atoms of the entry out of focus. Or the entry: this one
+// shows only while the entry holds what it acts on
 export type Dependence =
   | { option: string; is: boolean }
   | { option: string; isNot: string }
   | { option: string; above: number }
   | { option: string; below: number }
   | { opaque: true }
+  | { outOfFocus: true }
   | { entryHolds: keyof EntryHolds }
 
 interface Control<T> {
@@ -264,8 +267,10 @@ export const viewOptions = {
     choices: { all: 'all', ligands: 'ligands', backbone: 'backbone', 'picked residue': 'residue', 'picked chain': 'chain' },
     shownFor: splats,
   }),
-  // What an atom out of focus keeps of its alpha, down to none at 0, where it's hidden. It stops short of 1, where
-  // nothing would fade, as with every atom in focus
+  // What an atom out of focus keeps of its own light, down to none at 0, where it's hidden. It stops short of 1, where
+  // nothing would fade, as with every atom in focus. A faded sphere hides more of what's behind it than it keeps of
+  // its light, as much as it looks to be there, so that a faint one still reads as lying in front of a solid one. It
+  // shows only while Focus leaves atoms out of focus, which the ligands' doesn't in an entry without any
   fade: slider({
     folder: 'Atoms',
     label: 'Fade',
@@ -274,7 +279,7 @@ export const viewOptions = {
     max: 0.95,
     step: 0.05,
     shownFor: splats,
-    shownWhile: { option: 'focus', isNot: 'all' },
+    shownWhile: { outOfFocus: true },
   }),
   // Turns the structure slowly about its y axis, upright as it's framed, by orbiting the camera round it, and holds the
   // turn while a drag moves the view. It moves the view without changing how anything is drawn, so a preset leaves it

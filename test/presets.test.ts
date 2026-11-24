@@ -48,7 +48,7 @@ void test('the page opens on the first preset, the space-filling model, whose op
   assert.deepEqual(presets[0].options, defaultOptions)
   assert.equal(presetOf(defaultOptions, wholeEntry), presets[0])
   // And before an entry loads, when the entry holds nothing
-  const nothing: EntryHolds = { models: false, alternates: false, waters: false, hydrogens: false }
+  const nothing: EntryHolds = { models: false, alternates: false, waters: false, hydrogens: false, ligands: false }
   assert.equal(presetOf(defaultOptions, nothing), presets[0])
 })
 
@@ -147,6 +147,19 @@ void test('a preset is found by the controls the panel shows for the entry', () 
   const shellLeftOn: ViewOptions = { ...opening.options, conformations: 'all', backShell: true }
   assert.equal(presetOf(shellLeftOn, noAlternates), opening)
   assert.equal(presetOf(shellLeftOn, wholeEntry), opening)
+  // The ligands' Focus fades the rest of an entry that has ligands, where Fade shows and AO, which acts on nothing
+  // see-through, hides. In an entry without any, every atom stays solid: Fade hides, and AO shows
+  const ligandFocus = presets.find((preset) => preset.options.focus === 'ligands')
+  assert.ok(ligandFocus)
+  const noLigands: EntryHolds = { ...wholeEntry, ligands: false }
+  const fadeMoved: ViewOptions = { ...ligandFocus.options, fade: 0.55 }
+  assert.equal(presetOf(fadeMoved, wholeEntry), undefined)
+  assert.equal(presetOf(fadeMoved, noLigands), ligandFocus)
+  const occlusionMoved: ViewOptions = { ...ligandFocus.options, ao: 0.35 }
+  assert.equal(presetOf(occlusionMoved, wholeEntry), ligandFocus)
+  assert.equal(presetOf(occlusionMoved, noLigands), undefined)
+  // Every preset keeps a look of its own in such an entry
+  for (const preset of presets) assert.equal(presetOf(preset.options, noLigands), preset, preset.name)
 })
 
 void test('the Preset list offers custom only while custom is what it reads', () => {
@@ -166,9 +179,12 @@ void test('the Preset list offers custom only while custom is what it reads', ()
 })
 
 void test('every effect a preset turns on acts in its look', () => {
+  const noLigands: EntryHolds = { ...wholeEntry, ligands: false }
   for (const { name, options } of presets) {
-    // Ambient occlusion acts only while everything drawn is opaque
-    if (options.ao > 0) assert.equal(isOpaque(options, wholeEntry), true, name)
+    // Ambient occlusion acts only while everything drawn is opaque, which the ligands' Focus leaves it in an entry
+    // without ligands, and no other Focus that fades does
+    const opaque = isOpaque(options, wholeEntry) || (options.focus === 'ligands' && isOpaque(options, noLigands))
+    if (options.ao > 0) assert.equal(opaque, true, name)
     // The back shell is drawn only below full Opacity, under the spheres or the surface
     if (options.backShell) assert.equal(isBackShell(options), true, name)
     // Blend acts on the soft splats alone, and Detail on the splats
