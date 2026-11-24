@@ -99,19 +99,20 @@ const spheresAndSurface: ShownFor = { styles: ['spheres', 'surface'] }
 const surfaceAndField: ShownFor = { styles: ['surface', 'field'] }
 
 // Bloom's spread and threshold until the panel moves them, chosen with the opening look below: a tight glow around the
-// spheres' highlights and their brightest atoms, rather than a haze over the whole window
+// spheres' highlights, rather than a haze around every brightly coloured chain
 const bloomRadiusDefault = 0.25
-const bloomThresholdDefault = 0.8
-// Ambient occlusion's reach until the panel moves it, in ångströms, chosen with the opening look below: a little more
-// than an atom's width, so that the contacts between neighbouring atoms and the hollows among them darken while open
-// faces stay bright
-const aoRadiusDefault = 4
+const bloomThresholdDefault = 0.9
+// Ambient occlusion's reach until the panel moves it, in ångströms, chosen with the opening look below: nearly two
+// atoms' width, so that the clefts between a structure's domains darken as well as the contacts between neighbouring
+// atoms, while open faces stay bright
+const aoRadiusDefault = 6
 
-// The defaults are the page's opening look, set together and chosen by eye on haemoglobin, the entry the page opens on,
-// to show a structure at its most striking: solid, glossy spheres in their chains' colours, their buried atoms and the
-// far side of the structure in shadow, ambient occlusion in the contacts between them, and a glow around their
-// brightest highlights, over the page's black, turning slowly so that its depth shows as it moves. Opacity starts at
-// full, as the spheres are solid only there, and ambient occlusion acts on them only while they're solid
+// The defaults are the page's opening look, set together and chosen by eye on the antibody, the entry the page opens
+// on, to show a structure at its most striking: a space-filling model of solid, glossy spheres in their chains'
+// colours, their buried atoms and the far side of the structure in shadow, ambient occlusion in the contacts between
+// them, and a glow around their brightest highlights, over the page's black, turning slowly so that its depth shows as
+// it moves. Opacity starts at full, as the spheres are solid only there, and ambient occlusion acts on them only while
+// they're solid
 export const viewOptions = {
   style: styleChoice({ folder: 'Look', label: 'Style', default: 'spheres', shownFor: every }),
   // The surface and field styles' grid points per ångström: higher meshes or samples more finely, and more slowly
@@ -147,7 +148,7 @@ export const viewOptions = {
   shading: slider({
     folder: 'Look',
     label: 'Shading',
-    default: 0.75,
+    default: 0.9,
     min: 0,
     max: 1,
     step: 0.05,
@@ -268,7 +269,7 @@ export const viewOptions = {
   fade: slider({
     folder: 'Atoms',
     label: 'Fade',
-    default: 0.15,
+    default: 0.1,
     min: 0,
     max: 0.95,
     step: 0.05,
@@ -280,7 +281,7 @@ export const viewOptions = {
   // as it is
   spin: toggle({ folder: 'Scene', label: 'Spin', default: true, shownFor: every }),
   // How far the far side of the structure darkens, from none at 0 to black at 1
-  depthCue: slider({ folder: 'Scene', label: 'Depth cue', default: 0.85, min: 0, max: 1, step: 0.05, shownFor: every }),
+  depthCue: slider({ folder: 'Scene', label: 'Depth cue', default: 0.5, min: 0, max: 1, step: 0.05, shownFor: every }),
   // How far the cut reaches into the structure from its front, from none at 0. It stops short of 1, where it would
   // cut all of it away
   clip: slider({ folder: 'Scene', label: 'Clip', default: 0, min: 0, max: 0.95, step: 0.05, shownFor: every }),

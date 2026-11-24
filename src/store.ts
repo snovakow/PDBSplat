@@ -21,9 +21,9 @@ export const examples = [
   { id: '1IGT', name: 'antibody' },
 ] as const
 
-// Haemoglobin, whose four chains fill the window, each in its own colour, and on which the opening look was chosen.
-// It's one of the examples, so that the Example list shows it
-export const firstEntry: string = '4HHB' satisfies (typeof examples)[number]['id']
+// The antibody, whose four chains make a Y of three lobes, each chain in its own colour, the most striking shape among
+// the examples, and the one the presets were chosen on. It's one of the examples, so that the Example list shows it
+export const firstEntry: string = '1IGT' satisfies (typeof examples)[number]['id']
 
 export type Status = 'idle' | 'loading' | 'ready' | 'failed'
 

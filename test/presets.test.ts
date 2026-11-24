@@ -10,12 +10,13 @@ import {
 } from '../src/options.ts'
 import { customLook, presetList, presetOf, presets, withPreset } from '../src/presets.ts'
 import { optionShows } from '../src/shownOptions.ts'
-import { isBackShell, isOpaque, styleOf, styles } from '../src/viewer/styles.ts'
+import { compositeOf, hasGhosts, hasSolids, isBackShell, isOpaque, styleOf, styles } from '../src/viewer/styles.ts'
 
 // The presets: that each is a whole set of options the panel can show, that the page opens on one, that choosing one
 // sets its look and leaves the atoms shown and Spin as they were, that each is found from its own options, whatever
 // its hidden controls hold, and none once a control of the look moves, by the controls the panel shows for the entry,
-// that the Preset list offers custom only while it reads it, and that every effect a preset turns on acts in its look
+// that the Preset list offers custom only while it reads it, that every effect a preset turns on acts in its look,
+// and that between them they show every style and every way the renderer lays the atoms over one another
 
 // The options a preset leaves as they are: those that choose which atoms are shown, and Spin, which moves the view
 const keptOptions: string[] = ['hydrogens', 'waters', 'models', 'conformations', 'spin']
@@ -42,8 +43,8 @@ void test('each preset is a whole set of options the panel can show, under a nam
   }
 })
 
-void test('the page opens on the first preset, glossy, whose options the defaults are', () => {
-  assert.equal(presets[0].name, 'glossy')
+void test('the page opens on the first preset, the space-filling model, whose options the defaults are', () => {
+  assert.equal(presets[0].name, 'space-filling')
   assert.deepEqual(presets[0].options, defaultOptions)
   assert.equal(presetOf(defaultOptions, wholeEntry), presets[0])
   // And before an entry loads, when the entry holds nothing
@@ -135,17 +136,17 @@ void test('each preset is found from its own options, whatever it keeps, and non
 
 void test('a preset is found by the controls the panel shows for the entry', () => {
   // Alternates left on all, from an entry that has alternates, makes a see-through layer only in an entry that has
-  // them. In one that has none the glossy look stays solid, so its AO shows, and a move of it leaves the preset
-  const glossy = presets[0]
+  // them. In one that has none the opening look stays solid, so its AO shows, and a move of it leaves the preset
+  const opening = presets[0]
   const noAlternates: EntryHolds = { ...wholeEntry, alternates: false }
-  const aoMoved: ViewOptions = { ...glossy.options, conformations: 'all', ao: 0.5 }
+  const aoMoved: ViewOptions = { ...opening.options, conformations: 'all', ao: 0.5 }
   assert.equal(presetOf(aoMoved, noAlternates), undefined)
   // In one that has them the alternates are see-through, so AO hides, and holds what it likes
-  assert.equal(presetOf(aoMoved, wholeEntry), glossy)
+  assert.equal(presetOf(aoMoved, wholeEntry), opening)
   // The back shell hides at the look's full Opacity in either, so one left on is the preset's look still
-  const shellLeftOn: ViewOptions = { ...glossy.options, conformations: 'all', backShell: true }
-  assert.equal(presetOf(shellLeftOn, noAlternates), glossy)
-  assert.equal(presetOf(shellLeftOn, wholeEntry), glossy)
+  const shellLeftOn: ViewOptions = { ...opening.options, conformations: 'all', backShell: true }
+  assert.equal(presetOf(shellLeftOn, noAlternates), opening)
+  assert.equal(presetOf(shellLeftOn, wholeEntry), opening)
 })
 
 void test('the Preset list offers custom only while custom is what it reads', () => {
@@ -176,4 +177,20 @@ void test('every effect a preset turns on acts in its look', () => {
     // Thermal steps aside while Ellipsoids is on
     if (options.thermal > 0) assert.equal(options.ellipsoids, false, name)
   }
+})
+
+void test('between them the presets show every style, and every way the renderer lays the atoms over one another', () => {
+  const looks = presets.map((preset) => preset.options)
+  // Each of the four styles
+  assert.deepEqual(new Set(looks.map((options) => options.style)), new Set(styles.map((style) => style.id)))
+  // The soft splats summed and glowing, and the spheres layered
+  const composites = new Set(looks.map((options) => compositeOf(options)))
+  assert.deepEqual(composites, new Set(['layered', 'summed', 'glow', null]))
+  // The spheres' layers: solid alone, see-through alone with its back shell, and a see-through layer over solids
+  const layers = (options: ViewOptions) =>
+    [hasSolids(options), hasGhosts(options, wholeEntry), isBackShell(options)].join(' ')
+  const drawn = new Set(looks.filter((options) => options.style === 'spheres').map(layers))
+  assert.deepEqual(drawn, new Set(['true false false', 'false true true', 'true true false']))
+  // And the atoms as themselves and merged into their residues' ellipsoids
+  assert.ok(looks.some((options) => options.detail === 'residues'))
 })

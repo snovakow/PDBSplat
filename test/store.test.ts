@@ -221,6 +221,6 @@ void test('the opening look is solid spheres, which its ambient occlusion acts o
   // The rest of the look is on: the shadows of depth and burial, and the glow
   assert.ok(defaultOptions.depthCue > 0 && defaultOptions.burial > 0 && defaultOptions.bloom > 0)
   // The Example list shows the entry the page opens on
-  assert.equal(firstEntry, '4HHB')
+  assert.equal(firstEntry, '1IGT')
   assert.ok(examples.some((example) => example.id === firstEntry))
 })
