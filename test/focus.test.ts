@@ -1,44 +1,69 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { residueKey, type Atom } from '../src/pdb/mmcif.ts'
+import {
+  atomNameOf,
+  emptyStructure,
+  residueKey,
+  residueNameOf,
+  StructureBuilder,
+  type AtomRecord,
+  type Structure,
+} from '../src/pdb/structure.ts'
 import type { Focus } from '../src/options.ts'
 import { bindingSite, focusTest, hasLigands, pickedKey } from '../src/viewer/focus.ts'
 
 // Which atoms each Focus keeps, on small residue sets built here
 
-const base: Atom = {
-  element: 'C',
+const base: AtomRecord = {
   x: 0,
   y: 0,
   z: 0,
-  chain: 'A',
-  residueName: 'ALA',
-  residueNumber: 1,
-  insertion: '',
+  element: 'C',
   atomName: 'CA',
   altLoc: '',
   occupancy: 1,
   bFactor: 20,
   model: 1,
-  firstConformation: true,
-  polymer: true,
+  chain: 'A',
+  labelChain: 'A',
+  residueName: 'ALA',
+  residueNumber: 1,
+  insertion: '',
   hydrogen: false,
   water: false,
-  structure: 'none',
-  u: null,
+  firstConformation: true,
+  polymer: true,
 }
-const atom = (changes: Partial<Atom>): Atom => ({ ...base, ...changes })
+
+// A structure of the atoms given, each the base atom with its changes, in order
+function structureOf(atoms: Partial<AtomRecord>[]): Structure {
+  const builder = new StructureBuilder()
+  for (const changes of atoms) builder.add({ ...base, ...changes })
+  return builder.finish()
+}
 
 // A residue's atoms by name, each at its own place along x from the residue's
-function residue(residueName: string, residueNumber: number, names: string[], changes: Partial<Atom> = {}) {
-  const { x = 0, ...rest } = changes
-  return names.map((atomName, i) => atom({ residueName, residueNumber, atomName, ...rest, x: x + i * 0.1 }))
+function residue(residueName: string, residueNumber: number, names: string[], changes: Partial<AtomRecord> = {}) {
+  const x = changes.x ?? 0
+  return names.map((atomName, i): Partial<AtomRecord> => ({ ...changes, residueName, residueNumber, atomName, x: x + i * 0.1 }))
 }
 
-const inFocus = (entry: readonly Atom[], focus: Focus, picked: string | null = null) => {
-  const kept = focusTest(entry, focus, picked)
-  return kept && entry.filter(kept).map((found) => `${found.residueName}${found.residueNumber} ${found.atomName}`)
+// The atoms a Focus keeps, each named by its residue and its own name
+const inFocus = (structure: Structure, focus: Focus, picked: number | null = null) => {
+  const kept = focusTest(structure, focus, picked)
+  if (!kept) return null
+  const names: string[] = []
+  for (let atom = 0; atom < structure.atoms.count; atom++) {
+    if (!kept(atom)) continue
+    const number = structure.residues.number[structure.atoms.residue[atom]]
+    names.push(`${residueNameOf(structure, atom)}${number} ${atomNameOf(structure, atom)}`)
+  }
+  return names
 }
+
+// The keys of the residues a binding site keeps
+const siteKeys = (structure: Structure, site: Uint8Array) =>
+  [...site.keys()].filter((row) => site[row] === 1).map((row) => residueKey(structure, row))
 
 void test('the backbone is a peptide\'s main chain and a nucleotide\'s sugar-phosphate chain', () => {
   const peptide = residue('SER', 1, ['N', 'CA', 'C', 'O', 'OXT', 'CB', 'OG', 'HA'])
@@ -52,7 +77,7 @@ void test('the backbone is a peptide\'s main chain and a nucleotide\'s sugar-pho
   const phosphoserine = residue('SEP', 3, ['N', 'CA', 'C', 'O', 'CB', 'OG', 'P', 'O1P', 'O2P', 'O3P'], { x: 20 })
   // A calcium ion shares the name of a carbon alpha, but is in no polymer
   const calcium = residue('CA', 4, ['CA'], { x: 30, element: 'Ca', polymer: false })
-  const kept = inFocus([...peptide, ...nucleotide, ...phosphoserine, ...calcium], 'backbone')
+  const kept = inFocus(structureOf([...peptide, ...nucleotide, ...phosphoserine, ...calcium]), 'backbone')
   assert.deepEqual(kept, [
     'SER1 N',
     'SER1 CA',
@@ -86,67 +111,86 @@ void test('the ligands focus keeps each ligand, the residues within 5 Å of it a
   const far = residue('LEU', 88, ['N', 'CA'], { x: 5.2 })
   const nearWater = residue('HOH', 301, ['O'], { y: 3, water: true, polymer: false, element: 'O' })
   const farWater = residue('HOH', 302, ['O'], { y: 6, water: true, polymer: false, element: 'O' })
-  const entry = [...ligand, ...near, ...far, ...nearWater, ...farWater]
+  const entry = structureOf([...ligand, ...near, ...far, ...nearWater, ...farWater])
   const kept = inFocus(entry, 'ligands')
   assert.deepEqual(kept, ['HEM142 FE', 'HEM142 NA', 'HIS87 N', 'HIS87 CA', 'HIS87 CB', 'HIS87 NE2', 'HOH301 O'])
   const site = bindingSite(entry)
   assert.ok(site)
-  assert.deepEqual([...site.keys()], [1])
-  assert.deepEqual([...(site.get(1) ?? [])].sort(), ['A 142 ', 'A 301 ', 'A 87 '])
+  assert.deepEqual(siteKeys(entry, site).sort(), ['A 142 ', 'A 301 ', 'A 87 '])
   // The site is kept beside the entry
   assert.equal(bindingSite(entry), site)
   assert.equal(hasLigands(entry), true)
 })
 
 void test('an entry without ligands keeps every atom, as does a model without them', () => {
-  const protein = [...residue('ALA', 1, ['N', 'CA']), ...residue('HOH', 301, ['O'], { water: true, polymer: false })]
+  const protein = structureOf([...residue('ALA', 1, ['N', 'CA']), ...residue('HOH', 301, ['O'], { water: true, polymer: false })])
   assert.equal(focusTest(protein, 'ligands', null), null)
   assert.equal(bindingSite(protein), null)
   assert.equal(hasLigands(protein), false)
-  assert.equal(hasLigands([]), false)
+  assert.equal(hasLigands(emptyStructure), false)
   const twoModels = [
     ...residue('HEM', 142, ['FE'], { polymer: false }),
     ...residue('LEU', 88, ['N'], { x: 9 }),
     ...residue('LEU', 88, ['N'], { x: 9, model: 2 }),
   ]
-  assert.deepEqual(inFocus(twoModels, 'ligands'), ['HEM142 FE', 'LEU88 N'])
-  const kept = focusTest(twoModels, 'ligands', null)
+  const both = structureOf(twoModels)
+  assert.deepEqual(inFocus(both, 'ligands'), ['HEM142 FE', 'LEU88 N'])
+  const kept = focusTest(both, 'ligands', null)
   assert.ok(kept)
-  assert.equal(kept(twoModels[2]), true)
+  assert.equal(kept(1), false)
+  assert.equal(kept(2), true)
   // An entry has ligands where any of its models does, which is where it has a binding site
-  assert.equal(hasLigands(twoModels), true)
-  assert.equal(hasLigands(twoModels.slice(1)), false)
-  assert.equal(bindingSite(twoModels.slice(1)), null)
+  assert.equal(hasLigands(both), true)
+  assert.equal(hasLigands(structureOf(twoModels.slice(1))), false)
+  assert.equal(bindingSite(structureOf(twoModels.slice(1))), null)
   // As the binding site is, they're found among the first conformations
-  const laterOnly = residue('HEM', 142, ['FE'], { polymer: false, altLoc: 'B', firstConformation: false })
+  const laterOnly = structureOf(residue('HEM', 142, ['FE'], { polymer: false, altLoc: 'B', firstConformation: false }))
   assert.equal(hasLigands(laterOnly), false)
   assert.equal(bindingSite(laterOnly), null)
 })
 
 void test('the picked residue and chain keep the picked atom\'s, and nothing is kept out without a pick', () => {
-  const entry = [
+  const entry = structureOf([
     ...residue('ALA', 1, ['N', 'CA']),
     ...residue('GLY', 2, ['N', 'CA']),
-    ...residue('GLY', 2, ['N', 'CA'], { chain: 'B' }),
+    ...residue('GLY', 2, ['N', 'CA'], { chain: 'B', labelChain: 'B' }),
     ...residue('GLY', 2, ['N', 'CA'], { insertion: 'A' }),
-  ]
-  const picked = entry[2]
-  assert.deepEqual(inFocus(entry, 'residue', residueKey(picked)), ['GLY2 N', 'GLY2 CA'])
-  assert.deepEqual(inFocus(entry, 'chain', picked.chain), ['ALA1 N', 'ALA1 CA', 'GLY2 N', 'GLY2 CA', 'GLY2 N', 'GLY2 CA'])
-  assert.equal(inFocus(entry, 'chain', 'B')?.length, 2)
+  ])
+  // The picked atom is GLY 2's nitrogen in chain A
+  const picked = 2
+  const residueOf = pickedKey(entry, 'residue', picked)
+  const chainOf = pickedKey(entry, 'chain', picked)
+  assert.deepEqual(inFocus(entry, 'residue', residueOf), ['GLY2 N', 'GLY2 CA'])
+  assert.deepEqual(inFocus(entry, 'chain', chainOf), ['ALA1 N', 'ALA1 CA', 'GLY2 N', 'GLY2 CA', 'GLY2 N', 'GLY2 CA'])
+  assert.equal(inFocus(entry, 'chain', pickedKey(entry, 'chain', 4))?.length, 2)
   assert.equal(focusTest(entry, 'residue', null), null)
   assert.equal(focusTest(entry, 'chain', null), null)
   assert.equal(focusTest(entry, 'all', null), null)
-  assert.equal(focusTest(entry, 'all', residueKey(picked)), null)
+  assert.equal(focusTest(entry, 'all', residueOf), null)
+})
+
+void test('the picked residue and chain stay in focus in every model', () => {
+  const entry = structureOf([
+    ...residue('ALA', 1, ['N', 'CA']),
+    ...residue('GLY', 2, ['N', 'CA']),
+    ...residue('ALA', 1, ['N', 'CA'], { model: 2 }),
+    ...residue('GLY', 2, ['N', 'CA'], { model: 2 }),
+    ...residue('GLY', 2, ['N'], { model: 2, chain: 'B', labelChain: 'B' }),
+  ])
+  assert.deepEqual(inFocus(entry, 'residue', pickedKey(entry, 'residue', 2)), ['GLY2 N', 'GLY2 CA', 'GLY2 N', 'GLY2 CA'])
+  assert.equal(inFocus(entry, 'chain', pickedKey(entry, 'chain', 0))?.length, 8)
 })
 
 void test('pickedKey names the picked residue or chain for those focuses alone', () => {
-  const picked = atom({ chain: 'B', residueNumber: 52, insertion: 'A' })
-  assert.equal(pickedKey('residue', picked), 'B 52 A')
-  assert.equal(pickedKey('chain', picked), 'B')
-  assert.equal(pickedKey('all', picked), null)
-  assert.equal(pickedKey('ligands', picked), null)
-  assert.equal(pickedKey('backbone', picked), null)
-  assert.equal(pickedKey('residue', null), null)
-  assert.equal(pickedKey('chain', null), null)
+  const entry = structureOf([{}, { chain: 'B', labelChain: 'B', residueNumber: 52, insertion: 'A' }])
+  const picked = 1
+  assert.equal(pickedKey(entry, 'residue', picked), 1)
+  assert.equal(residueKey(entry, 1), 'B 52 A')
+  assert.equal(pickedKey(entry, 'chain', picked), 1)
+  assert.equal(entry.chains.name[1], 'B')
+  assert.equal(pickedKey(entry, 'all', picked), null)
+  assert.equal(pickedKey(entry, 'ligands', picked), null)
+  assert.equal(pickedKey(entry, 'backbone', picked), null)
+  assert.equal(pickedKey(entry, 'residue', null), null)
+  assert.equal(pickedKey(entry, 'chain', null), null)
 })

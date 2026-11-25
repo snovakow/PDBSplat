@@ -2,8 +2,8 @@ import { useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import { BackSide, BufferAttribute, BufferGeometry, Mesh, type Object3D } from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { vdwRadius } from '../pdb/elements.ts'
-import type { Atom } from '../pdb/mmcif.ts'
+import { vdwRadii } from '../pdb/elements.ts'
+import type { ShownAtoms, Structure } from '../pdb/structure.ts'
 import type { ColorBy } from '../options.ts'
 import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
@@ -27,8 +27,8 @@ const backDepthOrder = -3
 const backOrder = -2
 const frontDepthOrder = -1
 
-// A drawn surface, with what a recolour needs: the atoms it was built from, and each vertex's atom among them; and
-// what removes its pick when it goes
+// A drawn surface, with what a recolour needs: the atoms it was built from and their structure, and each vertex's atom
+// among them; and what removes its pick when it goes
 interface Surface {
   mesh: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   // The same mesh, drawn first into depth alone, so that a see-through surface shows only its nearest layer
@@ -38,8 +38,8 @@ interface Surface {
   back: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   backDepth: Mesh<BufferGeometry, MeshBasicNodeMaterial>
   colors: BufferAttribute
-  atoms: Atom[]
-  shown: readonly Atom[]
+  structure: Structure
+  shown: ShownAtoms
   owners: Uint32Array
   unregister: () => void
 }
@@ -47,7 +47,7 @@ interface Surface {
 // The shown atoms' surface, meshed by marching cubes in a worker, and lit from the viewer, as the spheres are
 export function ProteinSurface({ bounds }: Props) {
   const get = useThree((s) => s.get)
-  const atoms = useStore((s) => s.atoms)
+  const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const burial = useStore((s) => s.options.burial)
@@ -97,24 +97,27 @@ export function ProteinSurface({ bounds }: Props) {
   useEffect(() => {
     const { scene } = get()
     // A new entry's surface goes at once; for a changed option, the old one stays until the new one is ready
-    if (surface.current && surface.current.atoms !== atoms) {
+    if (surface.current && surface.current.structure !== structure) {
       discard(scene, surface.current)
       surface.current = null
     }
-    if (shown.length === 0) {
+    if (shown.count === 0) {
       if (surface.current) discard(scene, surface.current)
       surface.current = null
       return undefined
     }
 
-    const centers = new Float32Array(shown.length * 3)
-    const radii = new Float32Array(shown.length)
-    shown.forEach((atom, i) => {
-      centers[i * 3] = atom.x - bounds.center.x
-      centers[i * 3 + 1] = atom.y - bounds.center.y
-      centers[i * 3 + 2] = atom.z - bounds.center.z
-      radii[i] = vdwRadius(atom.element) * scale
-    })
+    const centers = new Float32Array(shown.count * 3)
+    const radii = new Float32Array(shown.count)
+    const { positions, element } = structure.atoms
+    const elementRadii = vdwRadii(structure.elements)
+    for (let i = 0; i < shown.count; i++) {
+      const atom = shown.rows[i]
+      centers[i * 3] = positions[atom * 3] - bounds.center.x
+      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
+      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
+      radii[i] = elementRadii[element[atom]] * scale
+    }
 
     // A cancelled request can still arrive, during a drag or while models play, and shows until the latest does, unless
     // its entry has gone. Results arrive in the order they were asked for, so one never replaces a newer surface
@@ -126,7 +129,7 @@ export function ProteinSurface({ bounds }: Props) {
         const surfaceBack = backMaterial.current
         const surfaceBackDepth = backDepthMaterial.current
         if (!surfaceMaterial || !surfaceDepth || !surfaceBack || !surfaceBackDepth) return
-        if (useStore.getState().atoms !== atoms) return
+        if (useStore.getState().structure !== structure) return
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', new BufferAttribute(built.positions, 3))
         geometry.setAttribute('normal', new BufferAttribute(built.normals, 3))
@@ -141,7 +144,7 @@ export function ProteinSurface({ bounds }: Props) {
         const pick: PickTest = (raycaster, hit) => {
           nearestSphere(raycaster.ray, centers, radii, raycaster.camera, sphereHit)
           if (sphereHit.index < 0 || sphereHit.distance >= hit.distance) return
-          hit.atom = shown[sphereHit.index]
+          hit.atom = shown.rows[sphereHit.index]
           hit.distance = sphereHit.distance
         }
 
@@ -151,7 +154,7 @@ export function ProteinSurface({ bounds }: Props) {
           back: new Mesh(geometry, surfaceBack),
           backDepth: new Mesh(geometry, surfaceBackDepth),
           colors,
-          atoms,
+          structure,
           shown,
           owners: built.owners,
           unregister: useStore.getState().registerPick(pick),
@@ -168,7 +171,7 @@ export function ProteinSurface({ bounds }: Props) {
         if (bounding) setDrawnReach(bounding.center.length() + bounding.radius)
         surface.current = next
         console.info(
-          `PDBSplat: surface of ${shown.length} atoms at ${built.spacing.toFixed(2)} Å: ` +
+          `PDBSplat: surface of ${shown.count} atoms at ${built.spacing.toFixed(2)} Å: ` +
             `${built.positions.length / 3} vertices, ${built.indices.length / 3} triangles, in ${Math.round(milliseconds)} ms`,
         )
       },
@@ -180,7 +183,7 @@ export function ProteinSurface({ bounds }: Props) {
     return () => {
       if (useStore.getState().options.models !== 'play') request.cancel()
     }
-  }, [get, atoms, shown, bounds, scale, resolution])
+  }, [get, structure, shown, bounds, scale, resolution])
 
   // A new colouring or Burial repaints the vertices from their atoms, without meshing again
   useEffect(() => {
@@ -214,8 +217,8 @@ export function ProteinSurface({ bounds }: Props) {
 }
 
 // Each vertex takes the colour of the atom adding the most density there
-function paint({ colors, atoms, shown, owners }: Surface, colorBy: ColorBy, burial: number) {
-  const atomRgb = atomColors(shown, colorBy, atoms, burial)
+function paint({ colors, structure, shown, owners }: Surface, colorBy: ColorBy, burial: number) {
+  const atomRgb = atomColors(structure, shown, colorBy, burial)
   const rgb = colors.array
   for (let v = 0; v < owners.length; v++) {
     const a = owners[v] * 3

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Vector3 } from 'three'
-import { vdwRadius } from '../pdb/elements.ts'
-import { defaultAtoms, type Atom } from '../pdb/mmcif.ts'
+import { vdwRadii } from '../pdb/elements.ts'
+import { defaultAtoms, type Structure } from '../pdb/structure.ts'
 import { useStore } from '../store.ts'
 
 export interface Bounds {
@@ -15,8 +15,8 @@ export interface Bounds {
 // Models and Alternates show at their defaults, waters included, so that showing more models or conformations doesn't
 // move the structure or the camera
 export function useBounds() {
-  const atoms = useStore((s) => s.atoms)
-  return useMemo(() => measure(defaultAtoms(atoms)), [atoms])
+  const structure = useStore((s) => s.structure)
+  return useMemo(() => measure(structure, defaultAtoms(structure)), [structure])
 }
 
 // The angle about the y axis, from the z axis towards x, of the level direction a structure spreads least along,
@@ -30,25 +30,27 @@ export function broadsideAngle(xx: number, xz: number, zz: number) {
   return -Math.atan2(2 * xz, xx - zz) / 2
 }
 
-// The centroid, the radius around it that holds every atom's van der Waals sphere, and the angle its broadest side
-// faces
-function measure(atoms: readonly Atom[]): Bounds {
+// The centroid of the structure's atoms at the given rows, the radius around it that holds every one's van der Waals
+// sphere, and the angle its broadest side faces
+function measure(structure: Structure, rows: Uint32Array): Bounds {
+  const { positions, element } = structure.atoms
+  const radii = vdwRadii(structure.elements)
   const center = new Vector3()
-  for (const atom of atoms) {
-    center.x += atom.x
-    center.y += atom.y
-    center.z += atom.z
+  for (const atom of rows) {
+    center.x += positions[atom * 3]
+    center.y += positions[atom * 3 + 1]
+    center.z += positions[atom * 3 + 2]
   }
-  if (atoms.length > 0) center.divideScalar(atoms.length)
+  if (rows.length > 0) center.divideScalar(rows.length)
 
   let radius = 0
   let xx = 0
   let xz = 0
   let zz = 0
-  for (const atom of atoms) {
-    const dx = atom.x - center.x
-    const dz = atom.z - center.z
-    radius = Math.max(radius, Math.hypot(dx, atom.y - center.y, dz) + vdwRadius(atom.element))
+  for (const atom of rows) {
+    const dx = positions[atom * 3] - center.x
+    const dz = positions[atom * 3 + 2] - center.z
+    radius = Math.max(radius, Math.hypot(dx, positions[atom * 3 + 1] - center.y, dz) + radii[element[atom]])
     xx += dx * dx
     xz += dx * dz
     zz += dz * dz

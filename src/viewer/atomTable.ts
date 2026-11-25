@@ -1,9 +1,9 @@
-import { DataTexture, RGBAFormat, UnsignedByteType } from 'three'
+import { Color, DataTexture, RGBAFormat, UnsignedByteType } from 'three'
 import { dot, int, ivec2, round, vec3 } from 'three/tsl'
 import type { Node, TextureNode } from 'three/webgpu'
 import type { ColorBy, Conformations, Focus } from '../options.ts'
-import type { Atom } from '../pdb/mmcif.ts'
-import { atomColors } from './atomColors.ts'
+import type { ShownAtoms, Structure } from '../pdb/structure.ts'
+import { atomColoring } from './atomColors.ts'
 import { focusTest } from './focus.ts'
 import type { Grouping } from './levels.ts'
 
@@ -26,16 +26,16 @@ export interface AtomTable {
   count: number
 }
 
-// What the atoms are painted from: the shown atoms and the entry they're from, Colour by and Burial, Focus with the
+// What the atoms are painted from: the shown atoms and the structure they're from, Colour by and Burial, Focus with the
 // picked focus's key and Fade, the model shown, or null for every model at once, with how many the entry has,
 // Alternates, and whether what's painted is drawn in layers
 export interface TablePaint {
-  shown: readonly Atom[]
-  entry: readonly Atom[]
+  shown: ShownAtoms
+  structure: Structure
   colorBy: ColorBy
   burial: number
   focus: Focus
-  picked: string | null
+  picked: number | null
   fade: number
   model: number | null
   modelCount: number
@@ -63,6 +63,9 @@ export function readAtomIndex(source: Uint8ClampedArray, offset: number) {
   return source[offset] + source[offset + 1] * byteRange + source[offset + 2] * byteRange * byteRange
 }
 
+// The colour each atom is painted with, reused by every paint
+const color = new Color()
+
 // Paints every shown atom's four bytes: its colour from the colouring, darkened by Burial, and its alpha from what
 // fades it. An atom in focus has a full alpha, and one out of focus Fade's share of it. Every model drawn at once
 // overlaps the others, so each atom then keeps one over the square root of the number of models, where the atoms are
@@ -71,22 +74,21 @@ export function readAtomIndex(source: Uint8ClampedArray, offset: number) {
 // drawn. Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn
 // whole. Opacity acts through the shading's uniform, so it isn't here
 export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint) {
-  const { shown, entry, colorBy, burial, focus, picked, fade, model, modelCount, conformations, layered } = paint
-  const rgb = atomColors(shown, colorBy, entry, burial)
-  const inFocus = focusTest(entry, focus, picked)
+  const { shown, structure, colorBy, burial, focus, picked, fade, model, modelCount, conformations, layered } = paint
+  const colorOf = atomColoring(structure, shown, colorBy, burial)
+  const inFocus = focusTest(structure, focus, picked)
   const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
-  shown.forEach((atom, i) => {
+  const { altLoc, occupancy } = structure.atoms
+  for (let i = 0; i < shown.count; i++) {
+    const atom = shown.rows[i]
+    colorOf(atom, color)
     const focusShare = !inFocus || inFocus(atom) ? 1 : fade
-    const occupancyShare = conformations === 'all' && atom.altLoc !== '' ? atom.occupancy : 1
-    const alpha = fullByte * focusShare * modelShare * occupancyShare
-    const r = rgb[i * 3] * fullByte
-    const g = rgb[i * 3 + 1] * fullByte
-    const b = rgb[i * 3 + 2] * fullByte
-    bytes[i * bytesPerAtom] = r
-    bytes[i * bytesPerAtom + 1] = g
-    bytes[i * bytesPerAtom + 2] = b
-    bytes[i * bytesPerAtom + 3] = alpha
-  })
+    const occupancyShare = conformations === 'all' && altLoc[atom] !== 0 ? occupancy[atom] : 1
+    bytes[i * bytesPerAtom] = color.r * fullByte
+    bytes[i * bytesPerAtom + 1] = color.g * fullByte
+    bytes[i * bytesPerAtom + 2] = color.b * fullByte
+    bytes[i * bytesPerAtom + 3] = fullByte * focusShare * modelShare * occupancyShare
+  }
 }
 
 // Paints a table's bytes, and has its texture sent again

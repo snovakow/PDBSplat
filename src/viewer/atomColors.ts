@@ -1,8 +1,19 @@
 import { Color, SRGBColorSpace } from 'three'
 import { burial } from '../pdb/burial.ts'
-import { elementColor } from '../pdb/elements.ts'
-import { defaultAtoms, residueKey, type Atom, type SecondaryStructure } from '../pdb/mmcif.ts'
+import { elementColors } from '../pdb/elements.ts'
 import { percentile } from '../pdb/percentile.ts'
+import {
+  chainOf,
+  defaultAtoms,
+  polymerFlag,
+  residueKey,
+  residueNameOf,
+  secondaryStructures,
+  waterFlag,
+  type SecondaryStructure,
+  type ShownAtoms,
+  type Structure,
+} from '../pdb/structure.ts'
 import type { ColorBy } from '../options.ts'
 
 // The chain and rainbow colourings' saturation and lightness, in three's HSL over the working colour space
@@ -30,51 +41,83 @@ const otherColor = new Color(0xffffff)
 const dnaResidues = new Set(['DA', 'DC', 'DG', 'DT', 'DU'])
 const rnaResidues = new Set(['A', 'C', 'G', 'U'])
 
-// Each atom's colour, by element, chain, B-factor, place along its chain or secondary structure, as r, g, b per atom in
-// three's working colour space, darkened by Burial's share of how buried the atom is. The entry's atoms set the
-// B-factor spread, the rainbow's ends and the burial, so that hiding atoms recolours none
-export function atomColors(atoms: readonly Atom[], colorBy: ColorBy, entry: readonly Atom[], burialStrength: number) {
-  const colors = new Float32Array(atoms.length * 3)
-  const chainColors = new Map<string, Color>()
-  const color = new Color()
-  const spread = colorBy === 'bfactor' ? bFactorSpread(entry) : null
-  const positions = colorBy === 'rainbow' ? rainbowPositions(entry) : null
-  const buried = burialStrength > 0 ? burial(entry).values : null
-  atoms.forEach((atom, i) => {
-    if (colorBy === 'chain') color.copy(chainColor(chainColors, atom.chain))
-    else if (spread) bFactorColor(color, spread, atom.bFactor)
+// Writes an atom's colour, by its row, into a Color, and gives that Color back
+export type AtomColoring = (atom: number, color: Color) => Color
+
+// How each atom is coloured, by element, chain, B-factor, place along its chain or secondary structure, in three's
+// working colour space, darkened by Burial's share of how buried the atom is. The entry sets the B-factor spread, the
+// rainbow's ends and the burial, so that hiding atoms recolours none; the chains take their hues in the order the shown
+// atoms first come to them
+export function atomColoring(structure: Structure, shown: ShownAtoms, colorBy: ColorBy, burialStrength: number): AtomColoring {
+  const { atoms } = structure
+  const { flags } = atoms
+  const elements = elementColors(structure.elements)
+  const chains = colorBy === 'chain' ? chainColors(structure, shown) : null
+  const spread = colorBy === 'bfactor' ? bFactorSpread(structure) : null
+  const positions = colorBy === 'rainbow' ? rainbowPositions(structure) : null
+  const buried = burialStrength > 0 ? burial(structure).values : null
+  return (atom, color) => {
+    const polymer = (flags[atom] & polymerFlag) !== 0
+    if (chains) color.copy(chains[chainOf(structure, atom)])
+    else if (spread) bFactorColor(color, spread, atoms.bFactor[atom])
     // The structure colouring, like the rainbow, leaves atoms outside polymer chains in their elements' colours
-    else if (colorBy === 'structure' && atom.polymer) color.copy(structureColor(atom))
+    else if (colorBy === 'structure' && polymer) color.copy(structureColor(structure, atom))
     else {
       // The rainbow leaves ligands, sugars and waters, which are in no polymer chain, in their elements' colours
-      const position = positions && atom.polymer ? positions.get(residueKey(atom)) : undefined
-      if (position === undefined) color.copy(elementColor(atom.element))
+      const position = positions && polymer ? positions[atoms.residue[atom]] : NaN
+      if (Number.isNaN(position)) color.copy(elements[atoms.element[atom]])
       else color.setHSL(rainbowStart + (rainbowEnd - rainbowStart) * position, saturation, lightness)
     }
-    if (buried) color.multiplyScalar(1 - burialStrength * (buried.get(atom) ?? 0))
+    if (buried) color.multiplyScalar(1 - burialStrength * buried[atom])
+    return color
+  }
+}
+
+// Each shown atom's colour under a colouring, as r, g, b per atom in the order they're shown
+export function atomColors(structure: Structure, shown: ShownAtoms, colorBy: ColorBy, burialStrength: number) {
+  const colorOf = atomColoring(structure, shown, colorBy, burialStrength)
+  const colors = new Float32Array(shown.count * 3)
+  const color = new Color()
+  for (let i = 0; i < shown.count; i++) {
+    colorOf(shown.rows[i], color)
     colors[i * 3] = color.r
     colors[i * 3 + 1] = color.g
     colors[i * 3 + 2] = color.b
-  })
+  }
   return colors
 }
 
 // A modified residue inside a range takes its colour, and a nucleotide outside any range is coloured as DNA or RNA
-function structureColor(atom: Atom) {
-  if (atom.structure !== 'none') return structureColors[atom.structure]
-  if (dnaResidues.has(atom.residueName)) return dnaColor
-  if (rnaResidues.has(atom.residueName)) return rnaColor
+function structureColor(structure: Structure, atom: number) {
+  const structureOf = secondaryStructures[structure.residues.structure[structure.atoms.residue[atom]]]
+  if (structureOf !== 'none') return structureColors[structureOf]
+  const name = residueNameOf(structure, atom)
+  if (dnaResidues.has(name)) return dnaColor
+  if (rnaResidues.has(name)) return rnaColor
   return otherColor
 }
 
-// Chains take hues a golden angle apart, in the order they first appear, so neighbours differ
-function chainColor(colors: Map<string, Color>, chain: string) {
-  let color = colors.get(chain)
-  if (!color) {
-    color = new Color().setHSL((colors.size * 0.618034) % 1, saturation, lightness)
-    colors.set(chain, color)
+// Each chain's colour, by its row. Chains take hues a golden angle apart, by name, in the order the shown atoms first
+// come to them, so neighbours differ and a chain keeps its hue in every model; the chains none of them reach come after
+function chainColors(structure: Structure, shown: ShownAtoms) {
+  const { chains } = structure
+  const hues = new Map<string, Color>()
+  const hueOf = (name: string) => {
+    let color = hues.get(name)
+    if (!color) {
+      color = new Color().setHSL((hues.size * 0.618034) % 1, saturation, lightness)
+      hues.set(name, color)
+    }
+    return color
   }
-  return color
+  let last = -1
+  for (let i = 0; i < shown.count; i++) {
+    const chain = chainOf(structure, shown.rows[i])
+    if (chain === last) continue
+    last = chain
+    hueOf(chains.name[chain])
+  }
+  return chains.name.map(hueOf)
 }
 
 interface Spread {
@@ -82,20 +125,21 @@ interface Spread {
   high: number
 }
 
-// Each entry's spread, kept beside its atoms, which are never changed
-const spreads = new WeakMap<readonly Atom[], Spread>()
+// Each entry's spread, kept beside its tables, which are never changed
+const spreads = new WeakMap<Structure, Spread>()
 
 // The low and high percentiles of the B-factors of the entry's atoms other than waters, whose B-factors run high.
 // They're taken from the atoms shown at the defaults, so that showing more models or conformations recolours none
-export function bFactorSpread(entry: readonly Atom[]): Spread {
-  let spread = spreads.get(entry)
+export function bFactorSpread(structure: Structure): Spread {
+  let spread = spreads.get(structure)
   if (!spread) {
+    const { flags, bFactor } = structure.atoms
     const values = Float64Array.from(
-      defaultAtoms(entry).filter((atom) => !atom.water),
-      (atom) => atom.bFactor,
+      defaultAtoms(structure).filter((atom) => (flags[atom] & waterFlag) === 0),
+      (atom) => bFactor[atom],
     ).sort()
     spread = { low: percentile(values, lowPercentile), high: percentile(values, highPercentile) }
-    spreads.set(entry, spread)
+    spreads.set(structure, spread)
   }
   return spread
 }
@@ -109,33 +153,48 @@ function bFactorColor(color: Color, { low, high }: Spread, bFactor: number) {
   return t < 0.5 ? color.setRGB(fade, fade, 1, SRGBColorSpace) : color.setRGB(1, fade, fade, SRGBColorSpace)
 }
 
-// Each entry's polymer residues, by residue key, at their place along their chain from 0 at its first to 1 at its last
-const rainbows = new WeakMap<readonly Atom[], Map<string, number>>()
+// Each entry's residues' places along their chains, kept beside its tables
+const rainbows = new WeakMap<Structure, Float64Array>()
 
-// A chain's polymer residues, modified ones such as selenomethionine included, in the file's order. They're those shown
-// at the defaults, and the keys name no model, so a residue takes the same place in every model and conformation
-export function rainbowPositions(entry: readonly Atom[]) {
-  let positions = rainbows.get(entry)
+// Each residue's place along its chain, by its row, from 0 at the chain's first polymer residue to 1 at its last, or
+// NaN for a residue in no polymer. A chain's polymer residues, modified ones such as selenomethionine included, are
+// those shown at the defaults, in the file's order, and a residue of another model or conformation takes the place of
+// the one with its chain's name, its number and its insertion code, so it takes the same place in every model
+export function rainbowPositions(structure: Structure) {
+  let positions = rainbows.get(structure)
   if (!positions) {
-    const chains = new Map<string, string[]>()
-    const seen = new Set<string>()
-    for (const atom of defaultAtoms(entry)) {
-      if (!atom.polymer) continue
-      const key = residueKey(atom)
-      if (seen.has(key)) continue
-      seen.add(key)
-      let residues = chains.get(atom.chain)
-      if (!residues) {
-        residues = []
-        chains.set(atom.chain, residues)
+    const { atoms, residues, chains } = structure
+    const placed = new Float64Array(residues.count).fill(NaN)
+    const chainResidues = new Map<string, number[]>()
+    let last = -1
+    for (const atom of defaultAtoms(structure)) {
+      const residue = atoms.residue[atom]
+      if ((atoms.flags[atom] & polymerFlag) === 0 || residue === last) continue
+      last = residue
+      const name = chains.name[chainOf(structure, atom)]
+      let listed = chainResidues.get(name)
+      if (!listed) {
+        listed = []
+        chainResidues.set(name, listed)
       }
-      residues.push(key)
+      if (listed.at(-1) !== residue) listed.push(residue)
     }
-    const placed = new Map<string, number>()
-    for (const residues of chains.values()) {
-      residues.forEach((key, i) => placed.set(key, residues.length > 1 ? i / (residues.length - 1) : 0))
+    for (const listed of chainResidues.values()) {
+      listed.forEach((residue, i) => {
+        placed[residue] = listed.length > 1 ? i / (listed.length - 1) : 0
+      })
     }
-    rainbows.set(entry, placed)
+    // The other models' residues meet the first model's by their keys
+    if (structure.models.length > 1) {
+      const byKey = new Map<string, number>()
+      for (const listed of chainResidues.values()) for (const residue of listed) byKey.set(residueKey(structure, residue), placed[residue])
+      const firstModel = structure.models[0]
+      for (let residue = 0; residue < residues.count; residue++) {
+        if (chains.model[structure.runs.chain[residues.run[residue]]] === firstModel) continue
+        placed[residue] = byKey.get(residueKey(structure, residue)) ?? NaN
+      }
+    }
+    rainbows.set(structure, placed)
     positions = placed
   }
   return positions

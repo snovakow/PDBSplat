@@ -18,12 +18,12 @@ interface Props {
 // near plane follows the camera
 export function Framing({ controlsRef, bounds }: Props) {
   const get = useThree((s) => s.get)
-  const atoms = useStore((s) => s.atoms)
+  const structure = useStore((s) => s.structure)
 
   useEffect(() => {
     const controls = controlsRef.current
     const { camera } = get()
-    if (atoms.length === 0 || !controls || !(camera instanceof PerspectiveCamera)) return
+    if (structure.atoms.count === 0 || !controls || !(camera instanceof PerspectiveCamera)) return
 
     const halfFov = MathUtils.degToRad(camera.fov) / 2
     const halfFovX = Math.atan(Math.tan(halfFov) * camera.aspect)
@@ -38,7 +38,7 @@ export function Framing({ controlsRef, bounds }: Props) {
     controls.maxDistance = distance * 3
     controls.target.set(0, 0, 0)
     controls.update()
-  }, [get, controlsRef, atoms, bounds])
+  }, [get, controlsRef, structure, bounds])
 
   // Each frame, after the controls have moved the camera, the near plane goes in front of what's drawn, as the
   // camera's distance from the structure's centre places it. The centre sits at the origin, so a turn about it leaves

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import { after, mock, test } from 'node:test'
 import { Color } from 'three'
-import type { Atom } from '../src/pdb/mmcif.ts'
+import {
+  altLocOf,
+  elementOf,
+  firstConformationFlag,
+  modelOf,
+  selectAtoms,
+  StructureBuilder,
+  type AtomRecord,
+  type Structure,
+} from '../src/pdb/structure.ts'
 import { atomColors } from '../src/viewer/atomColors.ts'
 import {
   createAtomTable,
@@ -22,45 +31,53 @@ import {
 mock.method(console, 'info', () => undefined)
 after(() => mock.restoreAll())
 
-const base: Atom = {
-  element: 'C',
+const base: AtomRecord = {
   x: 0,
   y: 0,
   z: 0,
-  chain: 'A',
-  residueName: 'ALA',
-  residueNumber: 1,
-  insertion: '',
+  element: 'C',
   atomName: 'CA',
   altLoc: '',
   occupancy: 1,
   bFactor: 20,
   model: 1,
-  firstConformation: true,
-  polymer: true,
+  chain: 'A',
+  labelChain: 'A',
+  residueName: 'ALA',
+  residueNumber: 1,
+  insertion: '',
   hydrogen: false,
   water: false,
-  structure: 'none',
-  u: null,
+  firstConformation: true,
+  polymer: true,
 }
-const atom = (changes: Partial<Atom>): Atom => ({ ...base, ...changes })
+
+// A structure of the atoms given, each the base atom with its changes, in order
+function structureOf(atoms: Partial<AtomRecord>[]): Structure {
+  const builder = new StructureBuilder()
+  for (const changes of atoms) builder.add({ ...base, ...changes })
+  return builder.finish()
+}
 
 // A chain of two residues with a ligand beside the second, in two models, where the first residue's CB is in two
 // conformations: the alternate A with occupancy 0.6 and the alternate B with 0.4. The ligand is 2.5 Å from the second
 // residue and over 5 Å from the first, so the binding site is the ligand and the second residue
 function entryOf() {
-  const model = (number: number) => [
-    atom({ model: number, residueNumber: 1, atomName: 'CA', x: 0 }),
-    atom({ model: number, residueNumber: 1, atomName: 'CB', x: 1.5, altLoc: 'A', occupancy: 0.6 }),
-    atom({ model: number, residueNumber: 1, atomName: 'CB', x: 1.5, y: 1, altLoc: 'B', occupancy: 0.4, firstConformation: false }),
-    atom({ model: number, residueNumber: 2, atomName: 'N', element: 'N', x: 10 }),
-    atom({ model: number, residueNumber: 2, atomName: 'CA', x: 11.5 }),
-    atom({ model: number, residueNumber: 50, residueName: 'HEM', atomName: 'FE', element: 'Fe', x: 14, polymer: false }),
+  const model = (number: number): Partial<AtomRecord>[] => [
+    { model: number, residueNumber: 1, atomName: 'CA', x: 0 },
+    { model: number, residueNumber: 1, atomName: 'CB', x: 1.5, altLoc: 'A', occupancy: 0.6 },
+    { model: number, residueNumber: 1, atomName: 'CB', x: 1.5, y: 1, altLoc: 'B', occupancy: 0.4, firstConformation: false },
+    { model: number, residueNumber: 2, atomName: 'N', element: 'N', x: 10 },
+    { model: number, residueNumber: 2, atomName: 'CA', x: 11.5 },
+    { model: number, residueNumber: 50, residueName: 'HEM', atomName: 'FE', element: 'Fe', x: 14, polymer: false },
   ]
-  return [...model(1), ...model(2)]
+  return structureOf([...model(1), ...model(2)])
 }
 
-const defaults: Omit<TablePaint, 'shown' | 'entry'> = {
+// The rows of the residues the entry's first model holds: the first, the second and the heme
+const secondResidue = 1
+
+const defaults: Omit<TablePaint, 'shown' | 'structure'> = {
   colorBy: 'element',
   burial: 0,
   focus: 'all',
@@ -73,21 +90,26 @@ const defaults: Omit<TablePaint, 'shown' | 'entry'> = {
 }
 
 // The atoms shown under a paint's model and Alternates, as the store selects them
-function shownUnder(entry: readonly Atom[], paint: Omit<TablePaint, 'shown' | 'entry'>) {
-  return entry.filter(
-    (candidate) =>
-      (paint.conformations === 'all' || candidate.firstConformation) &&
-      (paint.model === null || candidate.model === paint.model),
+function shownUnder(structure: Structure, paint: Omit<TablePaint, 'shown' | 'structure'>) {
+  const { flags } = structure.atoms
+  return selectAtoms(
+    structure,
+    (atom) =>
+      (paint.conformations === 'all' || (flags[atom] & firstConformationFlag) !== 0) &&
+      (paint.model === null || modelOf(structure, atom) === paint.model),
   )
 }
 
-function painted(entry: readonly Atom[], changes: Partial<TablePaint>) {
+function painted(structure: Structure, changes: Partial<TablePaint>) {
   const paint = { ...defaults, ...changes }
-  const shown = shownUnder(entry, paint)
-  const table = createAtomTable(shown.length)
-  paintAtomTable(table, { ...paint, shown, entry })
+  const shown = shownUnder(structure, paint)
+  const table = createAtomTable(shown.count)
+  paintAtomTable(table, { ...paint, shown, structure })
   return { table, shown, paint }
 }
+
+// Each shown atom's alpha
+const alphas = ({ table, shown }: ReturnType<typeof painted>) => Array.from({ length: shown.count }, (_, i) => table.bytes[i * 4 + 3])
 
 const texel = (bytes: Uint8ClampedArray, i: number) => [...bytes.subarray(i * 4, i * 4 + 4)]
 const byte = (value: number) => Math.round(value * 255)
@@ -128,55 +150,49 @@ void test('a painted texel is its atom\'s colour, and a paint marks the texture 
   for (const colorBy of ['element', 'chain', 'bfactor', 'rainbow', 'structure'] as const) {
     for (const burial of [0, 0.5]) {
       const { table, shown } = painted(entry, { colorBy, burial })
-      const rgb = atomColors(shown, colorBy, entry, burial)
-      shown.forEach((_, i) => {
+      const rgb = atomColors(entry, shown, colorBy, burial)
+      for (let i = 0; i < shown.count; i++) {
         assert.deepEqual(texel(table.bytes, i), [byte(rgb[i * 3]), byte(rgb[i * 3 + 1]), byte(rgb[i * 3 + 2]), 255])
-      })
+      }
     }
   }
   // A carbon in element colouring, as a byte of its linear colour
   const { table, shown } = painted(entry, {})
   const carbon = new Color(0x909090)
-  assert.equal(shown[0].element, 'C')
+  assert.equal(elementOf(entry, shown.rows[0]), 'C')
   assert.deepEqual(texel(table.bytes, 0), [byte(carbon.r), byte(carbon.g), byte(carbon.b), 255])
   assert.equal(table.texture.version, 1)
-  paintAtomTable(table, { ...defaults, shown, entry })
+  paintAtomTable(table, { ...defaults, shown, structure: entry })
   assert.equal(table.texture.version, 2)
 })
 
 void test('an atom out of focus keeps Fade\'s share of its alpha, and one in focus a full one', () => {
   const entry = entryOf()
-  const { table, shown } = painted(entry, { focus: 'ligands', fade: 0.15 })
-  const alphas = shown.map((_, i) => table.bytes[i * 4 + 3])
   // The first residue is out of focus, and the second with the ligand in it
-  assert.deepEqual(alphas, [38, 38, 255, 255, 255])
-  const whole = painted(entry, { focus: 'ligands', fade: 1 })
-  assert.deepEqual(whole.shown.map((_, i) => whole.table.bytes[i * 4 + 3]), [255, 255, 255, 255, 255])
-  const picked = painted(entry, { focus: 'residue', picked: 'A 2 ', fade: 0 })
-  assert.deepEqual(picked.shown.map((_, i) => picked.table.bytes[i * 4 + 3]), [0, 0, 255, 255, 0])
+  assert.deepEqual(alphas(painted(entry, { focus: 'ligands', fade: 0.15 })), [38, 38, 255, 255, 255])
+  assert.deepEqual(alphas(painted(entry, { focus: 'ligands', fade: 1 })), [255, 255, 255, 255, 255])
+  assert.deepEqual(alphas(painted(entry, { focus: 'residue', picked: secondResidue, fade: 0 })), [0, 0, 255, 255, 0])
 })
 
 void test('every model at once gives each atom one over the square root of the model count, unless layered', () => {
   const entry = entryOf()
-  const { table, shown } = painted(entry, { model: null, modelCount: 2 })
-  assert.equal(shown.length, 10)
-  for (let i = 0; i < shown.length; i++) assert.equal(table.bytes[i * 4 + 3], 180)
+  const every = painted(entry, { model: null, modelCount: 2 })
+  assert.equal(every.shown.count, 10)
+  assert.deepEqual(alphas(every), Array(10).fill(180))
   // Layered, only the nearest see-through surface shows, so each model's atoms stay whole, and solid
-  const layered = painted(entry, { model: null, modelCount: 2, layered: true })
-  for (let i = 0; i < layered.shown.length; i++) assert.equal(layered.table.bytes[i * 4 + 3], 255)
+  assert.deepEqual(alphas(painted(entry, { model: null, modelCount: 2, layered: true })), Array(10).fill(255))
   // An alternate still keeps its occupancy's share, and an atom out of focus Fade's
-  const alternates = painted(entry, { conformations: 'all', layered: true })
-  assert.deepEqual(alternates.shown.map((_, i) => alternates.table.bytes[i * 4 + 3]), [255, 153, 102, 255, 255, 255])
+  assert.deepEqual(alphas(painted(entry, { conformations: 'all', layered: true })), [255, 153, 102, 255, 255, 255])
 })
 
 void test('every alternate at once gives an alternate its occupancy\'s share, and the rest a full alpha', () => {
   const entry = entryOf()
-  const { table, shown } = painted(entry, { conformations: 'all' })
-  assert.deepEqual(shown.map((found) => found.altLoc), ['', 'A', 'B', '', '', ''])
-  assert.deepEqual(shown.map((_, i) => table.bytes[i * 4 + 3]), [255, 153, 102, 255, 255, 255])
+  const all = painted(entry, { conformations: 'all' })
+  assert.deepEqual([...all.shown.rows].map((atom) => altLocOf(entry, atom)), ['', 'A', 'B', '', '', ''])
+  assert.deepEqual(alphas(all), [255, 153, 102, 255, 255, 255])
   // The factors multiply: the alternate B of the first residue, out of focus, with both models drawn
-  const all = painted(entry, { conformations: 'all', model: null, modelCount: 2, focus: 'ligands', fade: 0.15 })
-  assert.equal(all.table.bytes[2 * 4 + 3], 11)
+  const faded = painted(entry, { conformations: 'all', model: null, modelCount: 2, focus: 'ligands', fade: 0.15 })
+  assert.equal(faded.table.bytes[2 * 4 + 3], 11)
 })
 
 void test('the pick passes through an atom whose alpha is below a fifth of full', () => {
@@ -197,12 +213,12 @@ void test('the pick passes through an atom whose alpha is below a fifth of full'
 void test('the ellipsoids\' paint and the field\'s table are painted alike, and only the table sends a texture', () => {
   const entry = entryOf()
   const { table, paint, shown } = painted(entry, { focus: 'ligands', fade: 0.15 })
-  const bytes = new Uint8ClampedArray(shown.length * 4)
-  paintAtoms(bytes, { ...paint, shown, entry })
+  const bytes = new Uint8ClampedArray(shown.count * 4)
+  paintAtoms(bytes, { ...paint, shown, structure: entry })
   assert.deepEqual([...bytes], [...table.bytes.subarray(0, bytes.length)])
   // Painting the table again has its texture sent again
   const version = table.texture.version
-  paintAtomTable(table, { ...paint, shown, entry })
+  paintAtomTable(table, { ...paint, shown, structure: entry })
   assert.equal(table.texture.version, version + 1)
 })
 
@@ -221,7 +237,7 @@ void test("a merged level's paint is the weighted mean of its members' colours a
     assert.equal(merged[8 + k], table.bytes[4 * 4 + k])
   }
   // A carbon and a nitrogen at weights 2 and 2 give the mean of the two colours, and the out-of-focus pair keeps Fade
-  assert.equal(shown[2].element, 'N')
+  assert.equal(elementOf(entry, shown.rows[2]), 'N')
   assert.equal(merged[3], 38)
   assert.equal(merged[7], 255)
 })

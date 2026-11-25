@@ -1,32 +1,36 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Atom } from '../src/pdb/mmcif.ts'
+import { StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
 import { writeEllipsoid } from '../src/viewer/ellipsoids.ts'
 
 // The thermal ellipsoids' covariances, from tensors with known eigenvalues built here
 
-const base: Atom = {
-  element: 'C',
+const base: AtomRecord = {
   x: 0,
   y: 0,
   z: 0,
-  chain: 'A',
-  residueName: 'ALA',
-  residueNumber: 1,
-  insertion: '',
+  element: 'C',
   atomName: 'CA',
   altLoc: '',
   occupancy: 1,
   bFactor: 20,
   model: 1,
-  firstConformation: true,
-  polymer: true,
+  chain: 'A',
+  labelChain: 'A',
+  residueName: 'ALA',
+  residueNumber: 1,
+  insertion: '',
   hydrogen: false,
   water: false,
-  structure: 'none',
-  u: null,
+  firstConformation: true,
+  polymer: true,
 }
-const atom = (changes: Partial<Atom>): Atom => ({ ...base, ...changes })
+
+// An atom with its B-factor, and with its tensor where it's given one
+interface Thermal {
+  bFactor?: number
+  u?: Float32Array
+}
 
 // The share of U a splat's covariance takes at Size 1: a quarter of the median of χ² with three degrees of freedom
 const share = 2.365974 / 4
@@ -75,9 +79,14 @@ function tensor(eigenvalues: number[]) {
   return Float32Array.of(m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2])
 }
 
-function covariance(target: Atom, scale = 1) {
+// The covariance written for the second atom of a structure, which has the B-factor and tensor given
+function covariance({ bFactor = base.bFactor, u }: Thermal, scale = 1) {
+  const builder = new StructureBuilder()
+  builder.add(base)
+  builder.add({ ...base, bFactor })
+  if (u) builder.addTensor(1, u)
   const written = new Float32Array(8)
-  writeEllipsoid(written, 2, target, scale)
+  writeEllipsoid(written, 2, builder.finish(), 1, scale)
   // Nothing is written outside the six values
   assert.deepEqual(Array.from(written.subarray(0, 2)), [0, 0])
   return Array.from(written.subarray(2))
@@ -112,20 +121,20 @@ function directions(count: number) {
 void test('an atom without a tensor gets an isotropic covariance from its B-factor', () => {
   const expected = (20 / bPerU) * share
   assert.ok(expected > floor)
-  assertClose(covariance(atom({ bFactor: 20 })), [expected, 0, 0, expected, 0, expected])
+  assertClose(covariance({ bFactor: 20 }), [expected, 0, 0, expected, 0, expected])
 })
 
 void test('a tensor with eigenvalues above the floor is written as it is', () => {
   const u = tensor([0.02, 0.03, 0.05])
   assertClose(
-    covariance(atom({ u })),
+    covariance({ u }),
     Array.from(u, (value) => value * share),
   )
 })
 
 void test('a tensor with a negative eigenvalue comes out positive definite, with every direction at least the floor', () => {
   const eigenvalues = [0.01, -0.002, 0.03]
-  const written = covariance(atom({ u: tensor(eigenvalues) }))
+  const written = covariance({ u: tensor(eigenvalues) })
   eigenvalues.forEach((eigenvalue, k) => {
     const expected = Math.max(eigenvalue * share, floor)
     const along = variance(written, axis(k))
@@ -137,20 +146,20 @@ void test('a tensor with a negative eigenvalue comes out positive definite, with
 })
 
 void test('a B-factor of 0 gives the floor in every direction', () => {
-  assertClose(covariance(atom({ bFactor: 0 })), [floor, 0, 0, floor, 0, floor])
-  assertClose(covariance(atom({ bFactor: 0 }), 3), [floor, 0, 0, floor, 0, floor])
-  assertClose(covariance(atom({ bFactor: -5 })), [floor, 0, 0, floor, 0, floor])
+  assertClose(covariance({ bFactor: 0 }), [floor, 0, 0, floor, 0, floor])
+  assertClose(covariance({ bFactor: 0 }, 3), [floor, 0, 0, floor, 0, floor])
+  assertClose(covariance({ bFactor: -5 }), [floor, 0, 0, floor, 0, floor])
 })
 
 void test('Size scales the covariance by its square', () => {
   const u = tensor([0.02, 0.03, 0.05])
-  const atSizeOne = covariance(atom({ u }))
+  const atSizeOne = covariance({ u })
   assertClose(
-    covariance(atom({ u }), 2),
+    covariance({ u }, 2),
     atSizeOne.map((value) => value * 4),
   )
   assertClose(
-    covariance(atom({ bFactor: 20 }), 0.5),
-    covariance(atom({ bFactor: 20 })).map((value) => value / 4),
+    covariance({ bFactor: 20 }, 0.5),
+    covariance({ bFactor: 20 }).map((value) => value / 4),
   )
 })

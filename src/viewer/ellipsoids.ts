@@ -1,6 +1,6 @@
 // An atom's thermal ellipsoid as a covariance: the region the atom spends half its time in, by its anisotropic
 // displacement, or by its B-factor alike in every direction where the entry gives it none
-import type { Atom } from '../pdb/mmcif.ts'
+import { tensorOf, type Structure } from '../pdb/structure.ts'
 import { surfaceDeviations } from './ellipsoidGeometry.ts'
 
 // An atom lies within its half-probability ellipsoid at a Mahalanobis distance of the square root of the median of χ²
@@ -28,20 +28,21 @@ const maxSweeps = 32
 const matrix = new Float64Array(9)
 const vectors = new Float64Array(9)
 
-// Writes the atom's ellipsoid at Size into target at offset, as a covariance in the order [xx, xy, xz, yy, yz, zz],
-// with every eigenvalue raised to at least the least variance
-export function writeEllipsoid(target: Float32Array, offset: number, atom: Atom, scale: number) {
+// Writes the ellipsoid at Size of the structure's atom, by its row, into target at offset, as a covariance in the order
+// [xx, xy, xz, yy, yz, zz], with every eigenvalue raised to at least the least variance
+export function writeEllipsoid(target: Float32Array, offset: number, structure: Structure, atom: number, scale: number) {
   const share = ellipsoidShare * scale * scale
-  const u = atom.u
-  if (u) {
-    matrix[0] = u[0] * share
-    matrix[1] = matrix[3] = u[1] * share
-    matrix[2] = matrix[6] = u[2] * share
-    matrix[4] = u[3] * share
-    matrix[5] = matrix[7] = u[4] * share
-    matrix[8] = u[5] * share
+  const at = tensorOf(structure, atom)
+  const u = structure.tensors?.values
+  if (u && at >= 0) {
+    matrix[0] = u[at] * share
+    matrix[1] = matrix[3] = u[at + 1] * share
+    matrix[2] = matrix[6] = u[at + 2] * share
+    matrix[4] = u[at + 3] * share
+    matrix[5] = matrix[7] = u[at + 4] * share
+    matrix[8] = u[at + 5] * share
   } else {
-    const variance = (Math.max(atom.bFactor, 0) / bPerU) * share
+    const variance = (Math.max(structure.atoms.bFactor[atom], 0) / bPerU) * share
     matrix.fill(0)
     matrix[0] = matrix[4] = matrix[8] = variance
   }

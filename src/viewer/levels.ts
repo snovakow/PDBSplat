@@ -1,31 +1,40 @@
 // Levels of detail: the atoms merged into one Gaussian per residue or per chain, each level's typical drawn diameter,
 // and the rule that picks the level to draw by how large its Gaussians are on screen
 import type { Detail } from '../options.ts'
+import { chainOf, type ShownAtoms, type Structure } from '../pdb/structure.ts'
 
 // A level the splat styles can draw, finest first: the atoms themselves, one Gaussian per residue, or one per chain
 export type Level = Exclude<Detail, 'auto'>
 export const levels: readonly Level[] = ['atoms', 'residues', 'chains']
 
-// The items of a list grouped by a key: each item's group, numbered in the order the groups first appear, and how many
-// groups there are
+// Items grouped: each item's group, numbered in the order the groups first appear, and how many groups there are
 export interface Grouping {
   groups: Uint32Array
   count: number
 }
 
-export function groupBy<T>(items: readonly T[], key: (item: T) => string): Grouping {
-  const groups = new Uint32Array(items.length)
-  const numbers = new Map<string, number>()
-  items.forEach((item, i) => {
-    const name = key(item)
-    let group = numbers.get(name)
-    if (group === undefined) {
-      group = numbers.size
-      numbers.set(name, group)
-    }
-    groups[i] = group
-  })
-  return { groups, count: numbers.size }
+// Items grouped by their keys, each a whole number below the key count, such as a row of a table
+export function groupBy(keys: ArrayLike<number>, keyCount: number): Grouping {
+  const groups = new Uint32Array(keys.length)
+  const numbers = new Int32Array(keyCount).fill(-1)
+  let count = 0
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i]
+    if (numbers[key] < 0) numbers[key] = count++
+    groups[i] = numbers[key]
+  }
+  return { groups, count }
+}
+
+// The shown atoms grouped as a merged level merges them: by residue, or by chain, each within its own model, so that
+// every model drawn at once keeps its own blobs
+export function levelGroups(structure: Structure, shown: ShownAtoms, level: Exclude<Level, 'atoms'>): Grouping {
+  const keys = new Uint32Array(shown.count)
+  for (let i = 0; i < shown.count; i++) {
+    const atom = shown.rows[i]
+    keys[i] = level === 'residues' ? structure.atoms.residue[atom] : chainOf(structure, atom)
+  }
+  return groupBy(keys, level === 'residues' ? structure.residues.count : structure.chains.count)
 }
 
 // One Gaussian per group: its centre, its covariance in the order [xx, xy, xz, yy, yz, zz], its members' summed

@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { defaultAtoms, parseMmcif, residueKey, type Atom } from '../src/pdb/mmcif.ts'
+import { parseMmcif } from '../src/pdb/mmcif.ts'
+import {
+  altLocOf,
+  atomNameOf,
+  chainOf,
+  defaultAtoms,
+  elementOf,
+  emptyStructure,
+  firstConformationFlag,
+  hydrogenFlag,
+  insertionOf,
+  modelOf,
+  polymerFlag,
+  residueKey,
+  residueNameOf,
+  secondaryStructures,
+  tensorOf,
+  waterFlag,
+  type Structure,
+} from '../src/pdb/structure.ts'
 
-// The parser, on mmCIF text written here
+// The parser, on mmCIF text written here, read back from the structure's tables
 
 // The atom table's columns, in the order most entries write them
 const columns = [
@@ -66,6 +85,46 @@ function covariance(u11: number, u22: number, u33: number, u12: number, u13: num
   return [u11, u12, u13, u22, u23, u33]
 }
 
+// An atom of the structure, by its row, as the tables give it
+function atomAt(structure: Structure, atom: number) {
+  const { atoms, residues, chains } = structure
+  const residue = atoms.residue[atom]
+  const flags = atoms.flags[atom]
+  const tensor = tensorOf(structure, atom)
+  return {
+    element: elementOf(structure, atom),
+    x: atoms.positions[atom * 3],
+    y: atoms.positions[atom * 3 + 1],
+    z: atoms.positions[atom * 3 + 2],
+    chain: chains.name[chainOf(structure, atom)],
+    residueName: residueNameOf(structure, atom),
+    residueNumber: residues.number[residue],
+    insertion: insertionOf(structure, residue),
+    atomName: atomNameOf(structure, atom),
+    altLoc: altLocOf(structure, atom),
+    occupancy: atoms.occupancy[atom],
+    bFactor: atoms.bFactor[atom],
+    model: modelOf(structure, atom),
+    firstConformation: (flags & firstConformationFlag) !== 0,
+    polymer: (flags & polymerFlag) !== 0,
+    hydrogen: (flags & hydrogenFlag) !== 0,
+    water: (flags & waterFlag) !== 0,
+    structure: secondaryStructures[residues.structure[residue]],
+    u: structure.tensors && tensor >= 0 ? structure.tensors.values.subarray(tensor, tensor + 6) : null,
+  }
+}
+
+// Every atom of the structure, in order
+function atomsOf(structure: Structure) {
+  return Array.from({ length: structure.atoms.count }, (_, atom) => atomAt(structure, atom))
+}
+
+// The text's structure, and its atoms as the tables give them
+function parsed(text: string) {
+  const structure = parseMmcif(text)
+  return { ...structure, structure, atoms: atomsOf(structure) }
+}
+
 function assertTensor(u: Float32Array | null, expected: number[], tolerance: number) {
   assert.ok(u)
   assert.equal(u.length, 6)
@@ -102,7 +161,7 @@ ATOM 2 C CA .
 A 2 ? 0 0 0 2 A
 ATOM 3 C CA A ALA A 3 '?' 0 0 0 3 A # a comment ending a row
 `
-  const { title, atoms } = parseMmcif(text)
+  const { title, atoms } = parsed(text)
   assert.equal(title, 'A title over two lines')
   assert.equal(atoms.length, 3)
   assert.equal(atoms[0].atomName, "O5'")
@@ -137,7 +196,7 @@ void test('finds columns by name whatever their order', () => {
     'label_alt_id',
     'pdbx_PDB_ins_code',
   ]
-  const { atoms } = parseMmcif(
+  const { atoms } = parsed(
     atomTable(
       [{ Cartn_x: '1', Cartn_y: '2', Cartn_z: '3', type_symbol: 'N', label_atom_id: 'N', B_iso_or_equiv: '12.5', occupancy: '0.5' }],
       shuffled,
@@ -153,7 +212,7 @@ void test('finds columns by name whatever their order', () => {
 })
 
 void test("reads each atom's fields, with their defaults", () => {
-  const { atoms, models } = parseMmcif(
+  const { atoms, models } = parsed(
     atomTable([
       { type_symbol: 'FE', label_atom_id: 'FE', label_comp_id: 'HEM', label_seq_id: '.', auth_seq_id: '142', group_PDB: 'HETATM' },
       { type_symbol: 'D', label_atom_id: 'D', label_comp_id: 'DOD', label_seq_id: '.', auth_seq_id: '201', group_PDB: 'HETATM' },
@@ -190,7 +249,7 @@ void test('falls back between the label and author columns, and to defaults with
     ['group_PDB', 'type_symbol', 'auth_atom_id', 'auth_comp_id', 'label_asym_id', 'label_seq_id', 'Cartn_x', 'Cartn_y', 'Cartn_z'],
     ['ATOM N N GLY B 7 1 2 3', 'ATOM O O HOH C . 4 5 6'],
   )
-  const { atoms, models } = parseMmcif(text)
+  const { atoms, models } = parsed(text)
   assert.equal(atoms[0].atomName, 'N')
   assert.equal(atoms[0].residueName, 'GLY')
   assert.equal(atoms[0].chain, 'B')
@@ -207,7 +266,7 @@ void test('falls back between the label and author columns, and to defaults with
 
 void test("marks each residue's first conformation per model", () => {
   const residue = { label_comp_id: 'SER', label_seq_id: '10' }
-  const { atoms } = parseMmcif(
+  const { atoms } = parsed(
     atomTable([
       { ...residue, label_atom_id: 'CA' },
       { ...residue, label_atom_id: 'OG', label_alt_id: 'A', occupancy: '0.6' },
@@ -228,11 +287,12 @@ void test("marks each residue's first conformation per model", () => {
     atoms.map((atom) => atom.altLoc),
     ['', 'A', 'B', 'B', 'A', 'B', 'A'],
   )
-  assert.equal(atoms[1].occupancy, 0.6)
+  // Occupancies and B-factors are kept in single precision
+  assert.equal(atoms[1].occupancy, Math.fround(0.6))
 })
 
 void test('keeps every model in file order, and defaultAtoms gives the first model in its first conformations once', () => {
-  const { atoms, models } = parseMmcif(
+  const { atoms, models, structure } = parsed(
     atomTable([
       { label_atom_id: 'CA', pdbx_PDB_model_num: '3', Cartn_x: '1' },
       { label_atom_id: 'CB', pdbx_PDB_model_num: '3', label_alt_id: 'A' },
@@ -247,14 +307,17 @@ void test('keeps every model in file order, and defaultAtoms gives the first mod
     atoms.map((atom) => atom.model),
     [3, 3, 3, 1, 1, 1],
   )
-  const defaults = defaultAtoms(atoms)
-  assert.deepEqual(defaults, [atoms[0], atoms[1]])
-  assert.equal(defaultAtoms(atoms), defaults)
-  assert.deepEqual(defaultAtoms([]), [])
+  const defaults = defaultAtoms(structure)
+  assert.deepEqual([...defaults], [0, 1])
+  assert.equal(defaultAtoms(structure), defaults)
+  assert.deepEqual([...defaultAtoms(emptyStructure)], [])
+  // Each model's chain is a chain of its own, and a residue's alternates stay in it
+  assert.equal(structure.chains.count, 2)
+  assert.deepEqual([...structure.atoms.residue], [0, 0, 0, 1, 1, 1])
 })
 
 void test('reads polymer from the place in the sequence, or from the record type without that column', () => {
-  const sequenced = parseMmcif(
+  const sequenced = parsed(
     atomTable([
       { group_PDB: 'ATOM', label_comp_id: 'ALA', label_seq_id: '4' },
       { group_PDB: 'HETATM', label_comp_id: 'MSE', label_seq_id: '5', type_symbol: 'SE', label_atom_id: 'SE' },
@@ -266,7 +329,7 @@ void test('reads polymer from the place in the sequence, or from the record type
     sequenced.atoms.map((atom) => atom.polymer),
     [true, true, false, false],
   )
-  const unsequenced = parseMmcif(
+  const unsequenced = parsed(
     atomTable(
       [
         { group_PDB: 'ATOM', label_comp_id: 'ALA', auth_seq_id: '4' },
@@ -316,7 +379,7 @@ _struct_sheet_range.beg_label_seq_id 6
 _struct_sheet_range.end_label_asym_id A
 _struct_sheet_range.end_label_seq_id 7
 `
-  const { atoms } = parseMmcif(text)
+  const { atoms } = parsed(text)
   assert.deepEqual(
     atoms.map((atom) => atom.structure),
     ['none', 'helix', 'strand', 'helix', 'none', 'strand', 'strand', 'none', 'turn', 'none'],
@@ -327,7 +390,7 @@ _struct_sheet_range.end_label_seq_id 7
 })
 
 void test('a range reaches an inserted residue by its place in the sequence', () => {
-  const { atoms } = parseMmcif(
+  const { atoms, structure } = parsed(
     atomTable([
       { label_seq_id: '1', auth_seq_id: '52' },
       { label_seq_id: '2', auth_seq_id: '52', pdbx_PDB_ins_code: 'A' },
@@ -344,14 +407,17 @@ _struct_conf.end_label_seq_id 2
     atoms.map((atom) => atom.structure),
     ['none', 'helix', 'none'],
   )
-  assert.deepEqual(atoms.map(residueKey), ['A 52 ', 'A 52 A', 'A 53 '])
+  assert.deepEqual(
+    [...structure.atoms.residue].map((residue) => residueKey(structure, residue)),
+    ['A 52 ', 'A 52 A', 'A 53 '],
+  )
 })
 
 void test('reads anisotropic tensors as U or B, in a loop or a one-row table, skipping a row missing a value', () => {
   const atoms = atomTable([{ id: '1' }, { id: '2' }, { id: '3' }])
   const names = ['id', 'U[1][1]', 'U[2][2]', 'U[3][3]', 'U[1][2]', 'U[1][3]', 'U[2][3]']
   const tolerance = 1e-7
-  const uLoop = parseMmcif(
+  const uLoop = parsed(
     atoms +
       loop('_atom_site_anisotrop', names, ['1 0.11 0.22 0.33 0.12 0.13 0.23', '2 0.1 0.2 0.3 ? 0.1 0.1', '3 0.4 0.5 0.6 -0.01 -0.02 -0.03']),
   )
@@ -361,14 +427,14 @@ void test('reads anisotropic tensors as U or B, in a loop or a one-row table, sk
 
   // The tensors may come before the atoms, as B, which is 8π² times U
   const bPerU = 8 * Math.PI * Math.PI
-  const bLoop = parseMmcif(
+  const bLoop = parsed(
     loop('_atom_site_anisotrop', names.map((name) => name.replace('U', 'B')), ['2 7.9 15.8 23.7 0.79 -1.58 2.37']) + atoms,
   )
   assert.equal(bLoop.atoms[0].u, null)
   assertTensor(bLoop.atoms[1].u, covariance(7.9, 15.8, 23.7, 0.79, -1.58, 2.37).map((b) => b / bPerU), tolerance)
   assert.equal(bLoop.atoms[2].u, null)
 
-  const single = parseMmcif(
+  const single = parsed(
     atoms +
       `_atom_site_anisotrop.id 3
 _atom_site_anisotrop.U[1][1] 0.01
@@ -382,7 +448,7 @@ _atom_site_anisotrop.U[2][3] 0.003
   assert.equal(single.atoms[0].u, null)
   assertTensor(single.atoms[2].u, covariance(0.01, 0.02, 0.03, 0.001, 0.002, 0.003), tolerance)
 
-  const incomplete = parseMmcif(
+  const incomplete = parsed(
     atoms +
       `_atom_site_anisotrop.id 1
 _atom_site_anisotrop.U[1][1] 0.01
@@ -397,23 +463,51 @@ _atom_site_anisotrop.U[2][3] 0.003
 })
 
 void test("collapses the title's whitespace", () => {
-  const { title } = parseMmcif(`_struct.title '  CRAMBIN   AT\t0.54 A  '\n${atomTable([{}])}`)
+  const { title } = parsed(`_struct.title '  CRAMBIN   AT\t0.54 A  '\n${atomTable([{}])}`)
   assert.equal(title, 'CRAMBIN AT 0.54 A')
-  assert.equal(parseMmcif(atomTable([{}])).title, '')
+  assert.equal(parsed(atomTable([{}])).title, '')
 })
 
 void test('throws without an atom table, and without a coordinate column', () => {
-  assert.throws(() => parseMmcif('data_empty\n_struct.title Nothing\n'), /no atom table/)
+  assert.throws(() => parsed('data_empty\n_struct.title Nothing\n'), /no atom table/)
   assert.throws(
-    () => parseMmcif(atomTable([{}], columns.filter((column) => column !== 'Cartn_y'))),
+    () => parsed(atomTable([{}], columns.filter((column) => column !== 'Cartn_y'))),
     /Cartn_y/,
   )
 })
 
 void test('residueKey names the chain, the number and the insertion code', () => {
-  const { atoms } = parseMmcif(atomTable([{ auth_asym_id: 'B', auth_seq_id: '52', pdbx_PDB_ins_code: 'A' }, { auth_seq_id: '7' }]))
-  assert.equal(residueKey(atoms[0]), 'B 52 A')
-  assert.equal(residueKey(atoms[1]), 'A 7 ')
-  const [first]: Atom[] = atoms
-  assert.notEqual(residueKey({ ...first, insertion: '' }), residueKey(first))
+  const { structure } = parsed(
+    atomTable([
+      { auth_asym_id: 'B', auth_seq_id: '52', pdbx_PDB_ins_code: 'A' },
+      { auth_asym_id: 'B', auth_seq_id: '52' },
+      { auth_seq_id: '7' },
+    ]),
+  )
+  assert.equal(structure.residues.count, 3)
+  assert.equal(residueKey(structure, 0), 'B 52 A')
+  assert.equal(residueKey(structure, 1), 'B 52 ')
+  assert.equal(residueKey(structure, 2), 'A 7 ')
+})
+
+void test('a residue breaks at a new model, chain, label chain, number or insertion code, and a run at a new model, chain or label chain', () => {
+  const { structure } = parsed(
+    atomTable([
+      { label_atom_id: 'N' },
+      { label_atom_id: 'CA' },
+      { label_seq_id: '2' },
+      { label_seq_id: '2', pdbx_PDB_ins_code: 'A' },
+      // A heme in chain A under its own label chain, then a water of chain A under another
+      { label_comp_id: 'HEM', label_asym_id: 'C', label_seq_id: '.', auth_seq_id: '142', group_PDB: 'HETATM' },
+      { label_comp_id: 'HOH', label_asym_id: 'D', label_seq_id: '.', auth_seq_id: '201', group_PDB: 'HETATM' },
+      { auth_asym_id: 'B', label_asym_id: 'B' },
+      { pdbx_PDB_model_num: '2' },
+    ]),
+  )
+  assert.deepEqual([...structure.atoms.residue], [0, 0, 1, 2, 3, 4, 5, 6])
+  assert.deepEqual([...structure.residues.run], [0, 0, 0, 1, 2, 3, 4])
+  assert.deepEqual(structure.runs.label, ['A', 'C', 'D', 'B', 'A'])
+  assert.deepEqual([...structure.runs.chain], [0, 0, 0, 1, 2])
+  assert.deepEqual(structure.chains.name, ['A', 'B', 'A'])
+  assert.deepEqual([...structure.chains.model], [1, 1, 2])
 })

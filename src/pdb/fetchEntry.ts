@@ -1,4 +1,5 @@
-import { parseMmcif, type Structure } from './mmcif.ts'
+import { parseMmcif } from './mmcif.ts'
+import type { Structure } from './structure.ts'
 
 // Four characters, starting with a digit, such as 1CRN
 const idPattern = /^[0-9][A-Z0-9]{3}$/

@@ -3,8 +3,7 @@ import { useEffect, useEffectEvent, useRef } from 'react'
 import { AdditiveBlending, Mesh, PerspectiveCamera, Vector3, type Camera, type InstancedBufferGeometry } from 'three'
 import { NodeMaterial } from 'three/webgpu'
 import { useShallow } from 'zustand/react/shallow'
-import { vdwRadius } from '../pdb/elements.ts'
-import { residueKey, type Atom } from '../pdb/mmcif.ts'
+import { vdwRadii } from '../pdb/elements.ts'
 import { entryHolds, shownAtoms, shownModel, useStore, type PickTest } from '../store.ts'
 import { isPickable, paintAtoms, paintMerged, type TablePaint } from './atomTable.ts'
 import type { Bounds } from './bounds.ts'
@@ -21,7 +20,7 @@ import {
 import { writeEllipsoid } from './ellipsoids.ts'
 import { pickedKey } from './focus.ts'
 import {
-  groupBy,
+  levelGroups,
   levels,
   levelToDraw,
   mergeGaussians,
@@ -94,13 +93,6 @@ function showLevel({ levels: built, diameters }: Drawn, camera: Camera, viewport
   }
 }
 
-// The groups a merged level merges: each residue, or each chain, within its own model, so that every model drawn at
-// once keeps its own blobs
-const groupKeys: Record<Exclude<Level, 'atoms'>, (atom: Atom) => string> = {
-  residues: (atom) => `${atom.model} ${residueKey(atom)}`,
-  chains: (atom) => `${atom.model} ${atom.chain}`,
-}
-
 // One ellipsoid per shown atom, round or its thermal ellipsoid, centred on the structure's centroid, or one per residue
 // or per chain, each the moment match of its atoms', as Detail asks, and every level under auto. Each is an instance
 // of one quad, with its paint as an attribute, so that a new colour or alpha repaints in place and rebuilds nothing.
@@ -123,11 +115,11 @@ export function ProteinSplats({ bounds }: Props) {
     useShallow(
       (s): TablePaint => ({
         shown: shownAtoms(s),
-        entry: s.atoms,
+        structure: s.structure,
         colorBy: s.options.colorBy,
         burial: s.options.burial,
         focus: s.options.focus,
-        picked: pickedKey(s.options.focus, s.picked),
+        picked: pickedKey(s.structure, s.options.focus, s.picked),
         fade: s.options.fade,
         model: shownModel(s),
         modelCount: s.models.length,
@@ -136,7 +128,7 @@ export function ProteinSplats({ bounds }: Props) {
       }),
     ),
   )
-  const { shown } = paint
+  const { shown, structure } = paint
   const drawn = useRef<Drawn | null>(null)
 
   // Paints the new tables from the inputs as they stand now, so that the build below needn't depend on them and no
@@ -144,35 +136,38 @@ export function ProteinSplats({ bounds }: Props) {
   const paintNow = useEffectEvent((current: Drawn) => paintFrom(current, paint))
 
   useEffect(() => {
-    if (shown.length === 0) return undefined
+    if (shown.count === 0) return undefined
 
-    const centers = new Float32Array(shown.length * 3)
-    const covariances = new Float32Array(shown.length * 6)
+    const centers = new Float32Array(shown.count * 3)
+    const covariances = new Float32Array(shown.count * 6)
     // Each atom's share of the blob it's merged into: its van der Waals volume, which goes as its radius at Size cubed
-    const weights = new Float32Array(shown.length)
+    const weights = new Float32Array(shown.count)
+    const { positions, element, bFactor } = structure.atoms
+    const radii = vdwRadii(structure.elements)
 
-    shown.forEach((atom, i) => {
-      centers[i * 3] = atom.x - bounds.center.x
-      centers[i * 3 + 1] = atom.y - bounds.center.y
-      centers[i * 3 + 2] = atom.z - bounds.center.z
+    for (let i = 0; i < shown.count; i++) {
+      const atom = shown.rows[i]
+      centers[i * 3] = positions[atom * 3] - bounds.center.x
+      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
+      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
 
-      const radius = vdwRadius(atom.element) * scale
+      const radius = radii[element[atom]] * scale
       weights[i] = radius * radius * radius
       if (ellipsoids) {
-        writeEllipsoid(covariances, i * covarianceSize, atom, scale)
+        writeEllipsoid(covariances, i * covarianceSize, structure, atom, scale)
       } else {
         // An atom's surface is its van der Waals sphere at Size, and thermal motion spreads the atom by its
         // displacement, whose variance adds to its own
         const size = radius / surfaceDeviations
-        const spread = (thermal * Math.max(atom.bFactor, 0)) / bFactorPerVariance
+        const spread = (thermal * Math.max(bFactor[atom], 0)) / bFactorPerVariance
         writeRound(covariances, i * covarianceSize, Math.sqrt(size * size + spread))
       }
-    })
+    }
 
     const layered = composite === 'layered'
     const { scene, camera, size } = get()
     const current: Drawn = {
-      paint: new Uint8ClampedArray(shown.length * paintSize),
+      paint: new Uint8ClampedArray(shown.count * paintSize),
       painted: null,
       weights,
       levels: [],
@@ -256,7 +251,7 @@ export function ProteinSplats({ bounds }: Props) {
         // The atom level's paint is the atoms' own, which the merged levels are painted from
         current.paint = build(centers, covariances, null).paint
       } else {
-        const grouping = groupBy(shown, groupKeys[level])
+        const grouping = levelGroups(structure, shown, level)
         const merged = mergeGaussians(centers, covariances, weights, grouping)
         build(merged.centers, merged.covariances, grouping)
       }
@@ -275,7 +270,7 @@ export function ProteinSplats({ bounds }: Props) {
       const cut = cutAlong(raycaster.ray, raycaster.camera)
       nearestEllipsoid(raycaster.ray, centers, inverses, cut, found, pickable)
       if (found.index < 0 || found.distance >= hit.distance) return
-      hit.atom = shown[found.index]
+      hit.atom = shown.rows[found.index]
       hit.distance = found.distance
     }
     const unregister = useStore.getState().registerPick(pick)
@@ -291,7 +286,7 @@ export function ProteinSplats({ bounds }: Props) {
       }
       drawn.current = null
     }
-  }, [get, shown, bounds, scale, thermal, ellipsoids, detail, composite, solids, ghosts, backShell])
+  }, [get, structure, shown, bounds, scale, thermal, ellipsoids, detail, composite, solids, ghosts, backShell])
 
   // A new colouring, Burial, Focus, Fade or pick repaints the ellipsoids, in place
   useEffect(() => {

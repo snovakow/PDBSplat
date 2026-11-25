@@ -3,7 +3,16 @@ import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
 import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
-import { defaultAtoms, type Atom } from './pdb/mmcif.ts'
+import {
+  emptyStructure,
+  firstConformationFlag,
+  hydrogenFlag,
+  modelOf,
+  selectAtoms,
+  waterFlag,
+  type ShownAtoms,
+  type Structure,
+} from './pdb/structure.ts'
 import { hasLigands } from './viewer/focus.ts'
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
@@ -37,17 +46,20 @@ export function openingOptions(reducedMotion: boolean): ViewOptions {
 // Whether the visitor's system asks for reduced motion. The tests run with no window to ask
 const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
-// Whether an atom is drawn, by Hydrogens, Waters and Conformations, and by the model shown, or every model for null
+// Whether an atom of the structure, by its row, is drawn, by Hydrogens, Waters and Conformations, and by the model
+// shown, or every model for null
 export function isShown(
-  atom: Atom,
+  structure: Structure,
+  atom: number,
   options: Pick<ViewOptions, 'hydrogens' | 'waters' | 'conformations'>,
   model: number | null,
 ) {
+  const flags = structure.atoms.flags[atom]
   return (
-    (options.hydrogens || !atom.hydrogen) &&
-    (options.waters || !atom.water) &&
-    (options.conformations === 'all' || atom.firstConformation) &&
-    (model === null || atom.model === model)
+    (options.hydrogens || (flags & hydrogenFlag) === 0) &&
+    (options.waters || (flags & waterFlag) === 0) &&
+    (options.conformations === 'all' || (flags & firstConformationFlag) !== 0) &&
+    (model === null || modelOf(structure, atom) === model)
   )
 }
 
@@ -57,29 +69,29 @@ export function shownModel(state: { options: ViewOptions; models: readonly numbe
   return state.options.models === 'play' ? state.model : (state.models[0] ?? state.model)
 }
 
-// What the shown atoms were last selected from, and the selection, so that the same array comes back while they stand
-interface ShownAtoms {
-  atoms: readonly Atom[]
+// What the shown atoms were last selected from, and the selection, so that the same one comes back while they stand
+interface LastShown {
+  structure: Structure
   hydrogens: boolean
   waters: boolean
   conformations: ViewOptions['conformations']
   model: number | null
-  shown: readonly Atom[]
+  shown: ShownAtoms
 }
-let lastShown: ShownAtoms | null = null
+let lastShown: LastShown | null = null
 
-// The atoms drawn: the entry's atoms that isShown keeps under Hydrogens, Waters, Alternates and the model shown. The
-// same array comes back while those stand, so that the panel's count and the drawing components, which each read it
-// from the store, filter the entry once for every change of it and not at all for any other change, such as of the
-// atom under the pointer
-export function shownAtoms(state: Pick<State, 'atoms' | 'options' | 'models' | 'model'>): readonly Atom[] {
-  const { atoms } = state
+// The atoms drawn: the structure's atoms that isShown keeps under Hydrogens, Waters, Alternates and the model shown.
+// The same selection comes back while those stand, so that the panel's count and the drawing components, which each
+// read it from the store, select once for every change of it and not at all for any other change, such as of the atom
+// under the pointer
+export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models' | 'model'>): ShownAtoms {
+  const { structure } = state
   const { hydrogens, waters, conformations } = state.options
   const model = shownModel(state)
   const last = lastShown
   if (
     last &&
-    last.atoms === atoms &&
+    last.structure === structure &&
     last.hydrogens === hydrogens &&
     last.waters === waters &&
     last.conformations === conformations &&
@@ -87,32 +99,33 @@ export function shownAtoms(state: Pick<State, 'atoms' | 'options' | 'models' | '
   ) {
     return last.shown
   }
-  const shown = atoms.filter((atom) => isShown(atom, state.options, model))
-  lastShown = { atoms, hydrogens, waters, conformations, model, shown }
+  const shown = selectAtoms(structure, (atom) => isShown(structure, atom, state.options, model))
+  lastShown = { structure, hydrogens, waters, conformations, model, shown }
   return shown
 }
 
-// What the entry was last found to hold, so that the same object comes back while its atoms and models stand
-let lastHeld: { atoms: readonly Atom[]; models: readonly number[]; holds: EntryHolds } | null = null
+// What the entry was last found to hold, so that the same object comes back while its structure stands
+let lastHeld: { structure: Structure; holds: EntryHolds } | null = null
 
 // What the entry holds that a control acts on: more than one model, atoms recorded in alternate positions, waters,
-// hydrogens, and ligands. Before an entry loads it holds none of them
-export function entryHolds({ atoms, models }: Pick<State, 'atoms' | 'models'>): EntryHolds {
-  if (lastHeld && lastHeld.atoms === atoms && lastHeld.models === models) return lastHeld.holds
+// hydrogens, and ligands, as its structure counted them. Before an entry loads it holds none of them
+export function entryHolds({ structure }: Pick<State, 'structure'>): EntryHolds {
+  if (lastHeld && lastHeld.structure === structure) return lastHeld.holds
+  const { tallies } = structure
   const holds: EntryHolds = {
-    models: models.length > 1,
-    alternates: atoms.some((atom) => atom.altLoc !== ''),
-    waters: atoms.some((atom) => atom.water),
-    hydrogens: atoms.some((atom) => atom.hydrogen),
-    ligands: hasLigands(atoms),
+    models: structure.models.length > 1,
+    alternates: tallies.alternates > 0,
+    waters: tallies.waters > 0,
+    hydrogens: tallies.hydrogens > 0,
+    ligands: hasLigands(structure),
   }
-  lastHeld = { atoms, models, holds }
+  lastHeld = { structure, holds }
   return holds
 }
 
-// The nearest atom a ray has met so far, and how far along the ray, or null and Infinity before any
+// The nearest atom a ray has met so far, by its row, and how far along the ray, or null and Infinity before any
 export interface PickHit {
-  atom: Atom | null
+  atom: number | null
   distance: number
 }
 
@@ -124,8 +137,8 @@ interface State {
   // The entry shown, which stays until the next one is ready
   id: string
   title: string
-  // Every model's atoms in every conformation
-  atoms: Atom[]
+  // Every model's atoms in every conformation, and its residues, runs and chains
+  structure: Structure
   // The entry's models, in the file's order, and the one shown while Models plays them
   models: readonly number[]
   model: number
@@ -137,11 +150,11 @@ interface State {
   load: (id: string) => Promise<void>
   options: ViewOptions
   setOptions: (changes: Partial<ViewOptions>) => void
-  // The atom under the pointer and the one last clicked, both of the shown entry, which a new entry clears
-  hovered: Atom | null
-  picked: Atom | null
-  hover: (atom: Atom | null) => void
-  pick: (atom: Atom | null) => void
+  // The atom under the pointer and the one last clicked, both by their rows in the shown entry, which a new entry clears
+  hovered: number | null
+  picked: number | null
+  hover: (atom: number | null) => void
+  pick: (atom: number | null) => void
   // A pick for each drawing component's atoms while they're drawn, which the pointer's ray is tested against
   picks: readonly PickTest[]
   // Adds a pick, and returns what removes it
@@ -151,7 +164,7 @@ interface State {
 export const useStore = create<State>()((set) => ({
   id: '',
   title: '',
-  atoms: [],
+  structure: emptyStructure,
   models: [],
   model: 0,
   status: 'idle',
@@ -182,11 +195,11 @@ export const useStore = create<State>()((set) => ({
     set({ status: 'loading', error: null })
     try {
       const entry = await fetchEntry(id)
-      const { atoms, models } = entry
+      const { models, atoms, tallies } = entry
       set({
         id: entry.id,
         title: entry.title,
-        atoms,
+        structure: entry,
         models,
         model: models[0] ?? 0,
         status: 'ready',
@@ -194,15 +207,13 @@ export const useStore = create<State>()((set) => ({
         picked: null,
       })
       // The counts are of the atoms shown at the defaults, then of the models and conformations beyond them
-      const first = defaultAtoms(atoms)
-      const count = (test: (atom: Atom) => boolean) => first.filter(test).length
-      const later = atoms.filter((atom) => !atom.firstConformation).length
+      const { defaults } = tallies
       console.info(
-        `PDBSplat: ${entry.id}, "${entry.title}": ${first.length} atoms, ` +
-          `${count((atom) => atom.water)} of them waters, ${count((atom) => atom.hydrogen)} hydrogens, ` +
-          `${count((atom) => atom.altLoc !== '')} with alternate locations; ` +
-          `${atoms.length} atoms across ${models.length} ${models.length === 1 ? 'model' : 'models'}, ` +
-          `${later} of them in later conformations`,
+        `PDBSplat: ${entry.id}, "${entry.title}": ${defaults.atoms} atoms, ` +
+          `${defaults.waters} of them waters, ${defaults.hydrogens} hydrogens, ` +
+          `${defaults.alternates} with alternate locations; ` +
+          `${atoms.count} atoms across ${models.length} ${models.length === 1 ? 'model' : 'models'}, ` +
+          `${tallies.later} of them in later conformations`,
       )
     } catch (error) {
       // A newer load aborted this one, and owns the status now

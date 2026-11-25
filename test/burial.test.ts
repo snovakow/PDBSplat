@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { after, mock, test } from 'node:test'
 import { burial } from '../src/pdb/burial.ts'
-import type { Atom } from '../src/pdb/mmcif.ts'
+import { StructureBuilder, type AtomRecord, type Structure } from '../src/pdb/structure.ts'
 
 // How deeply the atoms around an atom bury it, on clusters built here
 
@@ -9,28 +9,33 @@ import type { Atom } from '../src/pdb/mmcif.ts'
 mock.method(console, 'info', () => undefined)
 after(() => mock.restoreAll())
 
-const base: Atom = {
-  element: 'C',
+const base: AtomRecord = {
   x: 0,
   y: 0,
   z: 0,
-  chain: 'A',
-  residueName: 'ALA',
-  residueNumber: 1,
-  insertion: '',
+  element: 'C',
   atomName: 'CA',
   altLoc: '',
   occupancy: 1,
   bFactor: 20,
   model: 1,
-  firstConformation: true,
-  polymer: true,
+  chain: 'A',
+  labelChain: 'A',
+  residueName: 'ALA',
+  residueNumber: 1,
+  insertion: '',
   hydrogen: false,
   water: false,
-  structure: 'none',
-  u: null,
+  firstConformation: true,
+  polymer: true,
 }
-const atom = (changes: Partial<Atom>): Atom => ({ ...base, ...changes })
+
+// A structure of the atoms given, each the base atom with its changes, in order
+function structureOf(atoms: Partial<AtomRecord>[]): Structure {
+  const builder = new StructureBuilder()
+  for (const changes of atoms) builder.add({ ...base, ...changes })
+  return builder.finish()
+}
 
 // A heavy atom's weight in another's burial, by their distance: (1 − (d/R)²)² within R = 10 Å
 const weight = (distance: number) => (1 - (distance * distance) / 100) ** 2
@@ -42,20 +47,19 @@ const assertClose = (actual: number, expected: number) =>
 
 // A cube of carbons 1.5 Å apart, side atoms along each edge
 function lattice(side: number) {
-  const atoms: Atom[] = []
+  const atoms: Partial<AtomRecord>[] = []
   const half = (side - 1) / 2
   for (let i = 0; i < side; i++) {
     for (let j = 0; j < side; j++) {
-      for (let k = 0; k < side; k++) atoms.push(atom({ x: (i - half) * 1.5, y: (j - half) * 1.5, z: (k - half) * 1.5 }))
+      for (let k = 0; k < side; k++) atoms.push({ x: (i - half) * 1.5, y: (j - half) * 1.5, z: (k - half) * 1.5 })
     }
   }
   return atoms
 }
 
 void test('a lone atom buries nothing', () => {
-  const lone = atom({})
-  const { values, low, high } = burial([lone])
-  assert.equal(values.get(lone), 0)
+  const { values, low, high } = burial(structureOf([{}]))
+  assert.equal(values[0], 0)
   assert.equal(low, 0)
   assert.equal(high, 0)
 })
@@ -63,13 +67,12 @@ void test('a lone atom buries nothing', () => {
 void test('the centre of a dense cluster is buried to 1, and its edge falls towards 0', () => {
   const side = 7
   const atoms = lattice(side)
-  const { values } = burial(atoms)
+  const structure = structureOf(atoms)
+  const { values } = burial(structure)
   const at = (x: number, y: number, z: number) => {
-    const found = atoms.find((candidate) => candidate.x === x && candidate.y === y && candidate.z === z)
-    assert.ok(found)
-    const value = values.get(found)
-    assert.notEqual(value, undefined)
-    return value ?? NaN
+    const found = atoms.findIndex((candidate) => candidate.x === x && candidate.y === y && candidate.z === z)
+    assert.ok(found >= 0)
+    return values[found]
   }
   const edge = ((side - 1) / 2) * 1.5
   assert.equal(at(0, 0, 0), 1)
@@ -80,15 +83,14 @@ void test('the centre of a dense cluster is buried to 1, and its edge falls towa
   const edgeMiddle = at(-edge, -edge, 0)
   assert.ok(face < 1 && face > edgeMiddle, `face ${face}, edge ${edgeMiddle}`)
   assert.ok(edgeMiddle > 0 && edgeMiddle < 0.25, `edge ${edgeMiddle}`)
-  assert.equal(values.size, atoms.length)
+  assert.equal(values.length, structure.atoms.count)
 })
 
 void test('hydrogens and waters are buried but bury nothing', () => {
-  const a = atom({ x: 0 })
-  const b = atom({ x: 5 })
-  const hydrogen = atom({ x: -1, element: 'H', atomName: 'HA', hydrogen: true })
-  const water = atom({ z: -1, element: 'O', atomName: 'O', residueName: 'HOH', water: true, polymer: false })
-  const { values, low, high } = burial([a, b, hydrogen, water])
+  const hydrogen = { x: -1, element: 'H', atomName: 'HA', hydrogen: true }
+  const water = { z: -1, element: 'O', atomName: 'O', residueName: 'HOH', water: true, polymer: false }
+  // Two heavy atoms 5 Å apart, the rows 0 and 1, then the hydrogen and the water
+  const { values, low, high } = burial(structureOf([{ x: 0 }, { x: 5 }, hydrogen, water]))
   // Each heavy atom's sum is the other's weight alone; the hydrogen and the water are buried by both
   const heavy = weight(5)
   const hydrogenSum = weight(1) + weight(6)
@@ -96,25 +98,23 @@ void test('hydrogens and waters are buried but bury nothing', () => {
   // tenths of the way from the second heavy sum to the hydrogen's
   assertClose(low, heavy)
   assertClose(high, heavy + 0.9 * (hydrogenSum - heavy))
-  assert.equal(values.get(a), 0)
-  assert.equal(values.get(b), 0)
-  assert.equal(values.get(hydrogen), 1)
-  assert.equal(values.get(water), 1)
+  assert.deepEqual([...values], [0, 0, 1, 1])
 })
 
 void test('atoms in different models, and later conformations, bury nothing', () => {
-  const sameModel = burial([atom({ x: 0 }), atom({ x: 2 })])
+  const sameModel = burial(structureOf([{ x: 0 }, { x: 2 }]))
   assertClose(sameModel.low, weight(2))
   assertClose(sameModel.high, weight(2))
-  const twoModels = burial([atom({ x: 0, model: 1 }), atom({ x: 2, model: 2 })])
+  const twoModels = burial(structureOf([{ x: 0, model: 1 }, { x: 2, model: 2 }]))
   assert.equal(twoModels.low, 0)
   assert.equal(twoModels.high, 0)
-  const alternate = burial([atom({ x: 0 }), atom({ x: 2, altLoc: 'B', firstConformation: false })])
+  const alternate = burial(structureOf([{ x: 0 }, { x: 2, altLoc: 'B', firstConformation: false }]))
   assert.equal(alternate.low, 0)
   assert.equal(alternate.high, 0)
 })
 
 void test('the burial is kept beside the entry', () => {
-  const atoms = lattice(3)
-  assert.equal(burial(atoms), burial(atoms))
+  const structure = structureOf(lattice(3))
+  assert.equal(burial(structure), burial(structure))
+  assert.notEqual(burial(structureOf(lattice(3))), burial(structure))
 })

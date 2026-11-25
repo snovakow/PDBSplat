@@ -1,71 +1,9 @@
 // A small mmCIF reader for what the app needs: the _atom_site table, its anisotropic displacements, the secondary
-// structure's ranges and _struct.title
+// structure's ranges and _struct.title, written into a structure's tables
 
-// The secondary structure a polymer residue lies in, or none for one in no range and every atom outside a polymer
-export type SecondaryStructure = 'helix' | 'strand' | 'turn' | 'none'
-
-export interface Atom {
-  element: string
-  x: number
-  y: number
-  z: number
-  chain: string
-  residueName: string
-  residueNumber: number
-  // The residue's insertion code, such as the A of 52A, or empty
-  insertion: string
-  atomName: string
-  altLoc: string
-  occupancy: number
-  bFactor: number
-  model: number
-  // In its residue's first conformation within its model: without an alternate ID, or with the first one the residue
-  // lists there
-  firstConformation: boolean
-  // In a polymer chain, as a modified residue such as selenomethionine is though it's a HETATM record;
-  // ligands, sugars and waters aren't
-  polymer: boolean
-  hydrogen: boolean
-  water: boolean
-  structure: SecondaryStructure
-  // The atom's anisotropic mean square displacement U, in square ångströms, as the six values of its symmetric tensor
-  // in the order the ellipsoids' covariances take: U11, U12, U13, U22, U23 and U33. It's in the same Cartesian frame as
-  // the coordinates, as the PDB's format guide says of the ANISOU records the table carries. Null where the entry
-  // gives the atom none
-  u: Float32Array | null
-}
-
-export interface Structure {
-  title: string
-  // Every model's atoms in every conformation, in the file's order
-  atoms: Atom[]
-  // The models' numbers, in the file's order
-  models: number[]
-}
+import { StructureBuilder, type AtomRecord, type SecondaryStructure, type Structure } from './structure.ts'
 
 const waterNames = new Set(['HOH', 'WAT', 'H2O', 'DOD'])
-
-// Names an atom's residue by chain, number and insertion code, so that an inserted residue such as 52A stays apart from 52
-export function residueKey(atom: Atom) {
-  return `${atom.chain} ${atom.residueNumber} ${atom.insertion}`
-}
-
-// Each entry's atoms at the defaults, kept beside its atoms, which are never changed
-const defaultSets = new WeakMap<readonly Atom[], readonly Atom[]>()
-
-// The atoms of the entry's first model, each residue in its first conformation: the ones Models and Alternates show at
-// their defaults, which the framing and the entry's spreads come from, so that showing more models or conformations
-// moves neither
-export function defaultAtoms(entry: readonly Atom[]): readonly Atom[] {
-  let atoms = defaultSets.get(entry)
-  if (!atoms) {
-    // The atoms are in the file's order, so the first atom's model is the first model
-    const firstModel = entry[0]?.model
-    atoms = entry.filter((atom) => atom.model === firstModel && atom.firstConformation)
-    defaultSets.set(entry, atoms)
-  }
-  return atoms
-}
 
 // Walks CIF's tokens: whitespace-separated values, quoted strings and semicolon text fields
 class Tokenizer {
@@ -150,7 +88,7 @@ interface Range {
 export function parseMmcif(text: string): Structure {
   const tokens = new Tokenizer(text)
   let title = ''
-  let table: AtomTable | null = null
+  let table: AtomSite | null = null
   const ranges: Range[] = []
   // Each anisotropic tensor by its atom's id, which the atoms are joined to once the file is read, so either table may
   // come first
@@ -218,7 +156,7 @@ export function parseMmcif(text: string): Structure {
   }
   resolveStructures(table, ranges)
   joinTensors(table, tensors)
-  return { title: title.trim().replace(/\s+/g, ' '), atoms: table.atoms, models: table.models }
+  return table.builder.finish(title.trim().replace(/\s+/g, ' '))
 }
 
 // ? (unknown) and . (not applicable) both read as empty when unquoted
@@ -238,11 +176,11 @@ function columnFinder(columns: string[], category: string) {
   }
 }
 
-// The atoms as read, with what resolving the secondary structure needs of each: its residue's chain label and place in
-// the chain's sequence, NaN outside a polymer; and the id the anisotropic tensors name it by
-interface AtomTable {
-  atoms: Atom[]
-  models: number[]
+// The atom table as read: the structure it's written into, and what resolving the secondary structure and joining the
+// tensors need: each residue's chain label and place in its chain's sequence, NaN outside a polymer, and each atom's id,
+// which the anisotropic tensors name it by
+interface AtomSite {
+  builder: StructureBuilder
   labelChains: string[]
   labelPlaces: number[]
   ids: string[]
@@ -279,12 +217,32 @@ function atomReader(columns: string[]) {
 
   // Each residue's first alternate ID within each model: its atoms with that ID or none make its first conformation
   const residueAlts = new Map<string, string>()
-  const table: AtomTable = { atoms: [], models: [], labelChains: [], labelPlaces: [], ids: [] }
-  const { atoms, models } = table
+  const table: AtomSite = { builder: new StructureBuilder(), labelChains: [], labelPlaces: [], ids: [] }
+  const { builder, labelChains, labelPlaces, ids } = table
+  // One record serves every row, which the builder copies from
+  const atom: AtomRecord = {
+    x: 0,
+    y: 0,
+    z: 0,
+    element: '',
+    atomName: '',
+    altLoc: '',
+    occupancy: 1,
+    bFactor: 0,
+    model: 1,
+    chain: '',
+    labelChain: '',
+    residueName: '',
+    residueNumber: 0,
+    insertion: '',
+    hydrogen: false,
+    water: false,
+    firstConformation: true,
+    polymer: false,
+  }
 
   const read = (row: string[]) => {
     const modelNumber = Number(model(row) || 1)
-    if (models.at(-1) !== modelNumber && !models.includes(modelNumber)) models.push(modelNumber)
     const alt = altLoc(row)
     let firstConformation = true
     if (alt) {
@@ -296,30 +254,31 @@ function atomReader(columns: string[]) {
     const symbol = normaliseElement(element(row))
     const name = residueName(row)
     const place = labelSeq(row)
-    atoms.push({
-      element: symbol,
-      x: Number(x(row)),
-      y: Number(y(row)),
-      z: Number(z(row)),
-      chain: chain(row),
-      residueName: name,
-      residueNumber: Number(authSeq(row) || place || 0),
-      insertion: insertion(row),
-      atomName: atomName(row),
-      altLoc: alt,
-      occupancy: Number(occupancy(row) || 1),
-      bFactor: Number(bFactor(row) || 0),
-      model: modelNumber,
-      firstConformation,
-      polymer: sequenced ? place !== '' : group(row) === 'ATOM',
-      hydrogen: symbol === 'H' || symbol === 'D',
-      water: waterNames.has(name),
-      structure: 'none',
-      u: null,
-    })
-    table.labelChains.push(labelChain(row))
-    table.labelPlaces.push(place === '' ? NaN : Number(place))
-    table.ids.push(id(row))
+    atom.x = Number(x(row))
+    atom.y = Number(y(row))
+    atom.z = Number(z(row))
+    atom.element = symbol
+    atom.atomName = atomName(row)
+    atom.altLoc = alt
+    atom.occupancy = Number(occupancy(row) || 1)
+    atom.bFactor = Number(bFactor(row) || 0)
+    atom.model = modelNumber
+    atom.chain = chain(row)
+    atom.labelChain = labelChain(row)
+    atom.residueName = name
+    atom.residueNumber = Number(authSeq(row) || place || 0)
+    atom.insertion = insertion(row)
+    atom.hydrogen = symbol === 'H' || symbol === 'D'
+    atom.water = waterNames.has(name)
+    atom.firstConformation = firstConformation
+    atom.polymer = sequenced ? place !== '' : group(row) === 'ATOM'
+    builder.add(atom)
+    // A residue's label chain and place are its first atom's
+    if (builder.residueCount > labelPlaces.length) {
+      labelChains.push(atom.labelChain)
+      labelPlaces.push(place === '' ? NaN : Number(place))
+    }
+    ids.push(id(row))
   }
   return { table, read }
 }
@@ -374,10 +333,11 @@ function anisotropReader(columns: string[], tensors: Map<string, Float32Array>) 
 }
 
 // Gives each atom the tensor whose id is its own
-function joinTensors({ atoms, ids }: AtomTable, tensors: Map<string, Float32Array>) {
+function joinTensors({ builder, ids }: AtomSite, tensors: Map<string, Float32Array>) {
   if (tensors.size === 0) return
-  atoms.forEach((atom, i) => {
-    atom.u = tensors.get(ids[i]) ?? null
+  ids.forEach((id, atom) => {
+    const u = tensors.get(id)
+    if (u) builder.addTensor(atom, u)
   })
 }
 
@@ -392,9 +352,9 @@ function confStructure(type: string): SecondaryStructure {
 // Where ranges overlap, a strand outranks a helix, and either a turn
 const structureRank: Record<SecondaryStructure, number> = { none: 0, turn: 1, helix: 2, strand: 3 }
 
-// Gives each atom whose residue lies in a range that range's structure, matched by the chain's label and the residue's
-// place in its sequence. Atoms come residue by residue, so each residue's ranges are searched once
-function resolveStructures({ atoms, labelChains, labelPlaces }: AtomTable, ranges: Range[]) {
+// Gives each residue that lies in a range that range's structure, matched by the chain's label and the residue's place
+// in its sequence. Residues follow one another along their chains, so each run of residues at one place is searched once
+function resolveStructures({ builder, labelChains, labelPlaces }: AtomSite, ranges: Range[]) {
   if (ranges.length === 0) return
   const chainRanges = new Map<string, Range[]>()
   for (const range of ranges) {
@@ -405,10 +365,10 @@ function resolveStructures({ atoms, labelChains, labelPlaces }: AtomTable, range
   let chain: string | null = null
   let place = NaN
   let structure: SecondaryStructure = 'none'
-  atoms.forEach((atom, i) => {
-    if (labelChains[i] !== chain || !Object.is(labelPlaces[i], place)) {
-      chain = labelChains[i]
-      place = labelPlaces[i]
+  labelChains.forEach((label, residue) => {
+    if (label !== chain || !Object.is(labelPlaces[residue], place)) {
+      chain = label
+      place = labelPlaces[residue]
       structure = 'none'
       for (const range of chainRanges.get(chain) ?? []) {
         if (place >= range.first && place <= range.last && structureRank[range.structure] > structureRank[structure]) {
@@ -416,7 +376,7 @@ function resolveStructures({ atoms, labelChains, labelPlaces }: AtomTable, range
         }
       }
     }
-    atom.structure = structure
+    if (structure !== 'none') builder.setSecondaryStructure(residue, structure)
   })
 }
 

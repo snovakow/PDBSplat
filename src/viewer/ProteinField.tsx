@@ -2,8 +2,8 @@ import { useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import { BackSide, BoxGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor } from 'three'
 import { NodeMaterial } from 'three/webgpu'
-import { vdwRadius } from '../pdb/elements.ts'
-import type { Atom } from '../pdb/mmcif.ts'
+import { vdwRadii } from '../pdb/elements.ts'
+import type { ShownAtoms, Structure } from '../pdb/structure.ts'
 import type { ColorBy } from '../options.ts'
 import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestField } from '../surface/surfaceWorker.ts'
@@ -17,12 +17,12 @@ interface Props {
   bounds: Bounds
 }
 
-// A drawn field, with what a recolour needs: the atoms it was sampled from, and the table its points' owners are
-// coloured through; and what removes its pick when it goes
+// A drawn field, with what a recolour needs: the atoms it was sampled from and their structure, and the table its
+// points' owners are coloured through; and what removes its pick when it goes
 interface Field {
   table: AtomTable
-  atoms: Atom[]
-  shown: readonly Atom[]
+  structure: Structure
+  shown: ShownAtoms
   unregister: () => void
 }
 
@@ -38,7 +38,7 @@ interface Drawn {
 // grid fills, coloured by the atom nearest each point
 export function ProteinField({ bounds }: Props) {
   const get = useThree((s) => s.get)
-  const atoms = useStore((s) => s.atoms)
+  const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const burial = useStore((s) => s.options.burial)
@@ -79,20 +79,23 @@ export function ProteinField({ bounds }: Props) {
     const current = drawn.current
     if (!current) return undefined
     // A new entry's field goes at once; for a changed option, the old one stays until the new one is ready
-    if (current.field && current.field.atoms !== atoms) discard(current)
-    if (shown.length === 0) {
+    if (current.field && current.field.structure !== structure) discard(current)
+    if (shown.count === 0) {
       discard(current)
       return undefined
     }
 
-    const centers = new Float32Array(shown.length * 3)
-    const radii = new Float32Array(shown.length)
-    shown.forEach((atom, i) => {
-      centers[i * 3] = atom.x - bounds.center.x
-      centers[i * 3 + 1] = atom.y - bounds.center.y
-      centers[i * 3 + 2] = atom.z - bounds.center.z
-      radii[i] = vdwRadius(atom.element) * scale
-    })
+    const centers = new Float32Array(shown.count * 3)
+    const radii = new Float32Array(shown.count)
+    const { positions, element } = structure.atoms
+    const elementRadii = vdwRadii(structure.elements)
+    for (let i = 0; i < shown.count; i++) {
+      const atom = shown.rows[i]
+      centers[i * 3] = positions[atom * 3] - bounds.center.x
+      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
+      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
+      radii[i] = elementRadii[element[atom]] * scale
+    }
 
     // A cancelled request can still arrive, during a drag or while models play, and shows until the latest does,
     // unless its entry has gone. Results arrive in the order they were asked for, so one never replaces a newer field
@@ -100,10 +103,10 @@ export function ProteinField({ bounds }: Props) {
     request.result.then(
       ({ field, milliseconds }) => {
         const target = drawn.current
-        if (!target || useStore.getState().atoms !== atoms) return
+        if (!target || useStore.getState().structure !== structure) return
         const { options } = useStore.getState()
-        const table = createAtomTable(shown.length)
-        paintAtomTable(table, paintOf(shown, atoms, options.colorBy, options.burial))
+        const table = createAtomTable(shown.count)
+        paintAtomTable(table, paintOf(shown, structure, options.colorBy, options.burial))
 
         // A ray picks the atom whose sphere it enters first, among those this field was sampled from. Each field
         // brings its own pick, so that a pointer held still is tested again when a new field is drawn
@@ -111,7 +114,7 @@ export function ProteinField({ bounds }: Props) {
         const pick: PickTest = (raycaster, hit) => {
           nearestSphere(raycaster.ray, centers, radii, raycaster.camera, sphereHit)
           if (sphereHit.index < 0 || sphereHit.distance >= hit.distance) return
-          hit.atom = shown[sphereHit.index]
+          hit.atom = shown.rows[sphereHit.index]
           hit.distance = sphereHit.distance
         }
 
@@ -124,9 +127,9 @@ export function ProteinField({ bounds }: Props) {
         box.visible = true
         // The cloud reaches no farther from the structure's centre than the box's corners
         setDrawnReach(box.position.length() + box.scale.length() / 2)
-        target.field = { table, atoms, shown, unregister: useStore.getState().registerPick(pick) }
+        target.field = { table, structure, shown, unregister: useStore.getState().registerPick(pick) }
         console.info(
-          `PDBSplat: field of ${shown.length} atoms at ${field.spacing.toFixed(2)} Å: ` +
+          `PDBSplat: field of ${shown.count} atoms at ${field.spacing.toFixed(2)} Å: ` +
             `${nx}×${ny}×${nz} points, in ${Math.round(milliseconds)} ms`,
         )
       },
@@ -137,22 +140,22 @@ export function ProteinField({ bounds }: Props) {
     return () => {
       if (useStore.getState().options.models !== 'play') request.cancel()
     }
-  }, [atoms, shown, bounds, scale, resolution])
+  }, [structure, shown, bounds, scale, resolution])
 
   // A new colouring or Burial repaints the table the march reads, without sampling again
   useEffect(() => {
     const field = drawn.current?.field
-    if (field) paintAtomTable(field.table, paintOf(field.shown, field.atoms, colorBy, burial))
+    if (field) paintAtomTable(field.table, paintOf(field.shown, field.structure, colorBy, burial))
   }, [colorBy, burial])
 
   return null
 }
 
 // What the field's table is painted from: the colouring and Burial alone, with nothing faded, so every alpha is full
-function paintOf(shown: readonly Atom[], entry: readonly Atom[], colorBy: ColorBy, burial: number): TablePaint {
+function paintOf(shown: ShownAtoms, structure: Structure, colorBy: ColorBy, burial: number): TablePaint {
   return {
     shown,
-    entry,
+    structure,
     colorBy,
     burial,
     focus: 'all',

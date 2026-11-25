@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { selectAtoms, StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
 import { writeRound } from '../src/viewer/ellipsoidGeometry.ts'
 import {
   groupBy,
+  levelGroups,
   levelPixels,
   levels,
   levelToDraw,
@@ -35,11 +37,54 @@ const near = (actual: ArrayLike<number>, expected: number[], message?: string) =
 }
 
 void test('groupBy numbers the groups in the order they first appear', () => {
-  const items = ['b', 'a', 'b', 'c', 'a']
-  const grouping = groupBy(items, (item) => item)
+  const grouping = groupBy([1, 0, 1, 4, 0], 5)
   assert.deepEqual([...grouping.groups], [0, 1, 0, 2, 1])
   assert.equal(grouping.count, 3)
-  assert.deepEqual(groupBy([], () => ''), { groups: new Uint32Array(0), count: 0 })
+  assert.deepEqual(groupBy([], 0), { groups: new Uint32Array(0), count: 0 })
+})
+
+void test("a merged level groups the shown atoms by residue or by chain, each within its own model", () => {
+  const base: AtomRecord = {
+    x: 0,
+    y: 0,
+    z: 0,
+    element: 'C',
+    atomName: 'CA',
+    altLoc: '',
+    occupancy: 1,
+    bFactor: 20,
+    model: 1,
+    chain: 'A',
+    labelChain: 'A',
+    residueName: 'ALA',
+    residueNumber: 1,
+    insertion: '',
+    hydrogen: false,
+    water: false,
+    firstConformation: true,
+    polymer: true,
+  }
+  const builder = new StructureBuilder()
+  const atoms: Partial<AtomRecord>[] = [
+    { atomName: 'N' },
+    {},
+    { residueNumber: 2 },
+    { chain: 'B', labelChain: 'B' },
+    // Chain A's heme, after chain B, in chain A's blob
+    { labelChain: 'C', residueName: 'HEM', residueNumber: 142, polymer: false },
+    { model: 2 },
+    { model: 2, residueNumber: 2 },
+  ]
+  for (const changes of atoms) builder.add({ ...base, ...changes })
+  const structure = builder.finish()
+  // Every atom but the first, as Hydrogens or a Focus at 0 might leave them
+  const shown = selectAtoms(structure, (atom) => atom > 0)
+  const residues = levelGroups(structure, shown, 'residues')
+  assert.deepEqual([...residues.groups], [0, 1, 2, 3, 4, 5])
+  assert.equal(residues.count, 6)
+  const chains = levelGroups(structure, shown, 'chains')
+  assert.deepEqual([...chains.groups], [0, 0, 1, 0, 2, 2])
+  assert.equal(chains.count, 3)
 })
 
 void test("one atom's group is that atom", () => {

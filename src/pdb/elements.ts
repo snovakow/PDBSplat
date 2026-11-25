@@ -42,3 +42,14 @@ export function elementColor(symbol: string): Color {
 export function vdwRadius(symbol: string): number {
   return elements[symbol]?.radius ?? fallback.radius
 }
+
+// Each symbol's van der Waals radius by its place in a symbol table, such as a structure's, which its atoms' elements
+// index
+export function vdwRadii(symbols: readonly string[]): number[] {
+  return symbols.map(vdwRadius)
+}
+
+// Each symbol's colour by its place in a symbol table
+export function elementColors(symbols: readonly string[]): Color[] {
+  return symbols.map(elementColor)
+}

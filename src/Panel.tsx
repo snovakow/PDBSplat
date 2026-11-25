@@ -71,7 +71,8 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   const title = useStore((s) => s.title)
   const status = useStore((s) => s.status)
   const error = useStore((s) => s.error)
-  const shown = useStore((s) => shownAtoms(s).length)
+  const shown = useStore((s) => shownAtoms(s).count)
+  const structure = useStore((s) => s.structure)
   const picked = useStore((s) => s.picked)
   const manyModels = useStore((s) => s.models.length > 1)
 
@@ -171,8 +172,8 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   }, [set, id, title, shown, status, error])
 
   useEffect(() => {
-    set({ picked: picked ? atomText(picked, manyModels) : '' })
-  }, [set, picked, manyModels])
+    set({ picked: picked === null ? '' : atomText(structure, picked, manyModels) })
+  }, [set, structure, picked, manyModels])
 
   return null
 }

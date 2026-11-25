@@ -9,7 +9,7 @@ import {
   type Folder,
   type ViewOptions,
 } from '../src/options.ts'
-import type { Atom } from '../src/pdb/mmcif.ts'
+import { emptyStructure, StructureBuilder, type AtomRecord, type Structure } from '../src/pdb/structure.ts'
 import {
   entryHolds,
   examples,
@@ -25,54 +25,65 @@ import { hasGhosts, hasSolids, isOpaque, styles } from '../src/viewer/styles.ts'
 // The store's pure rules: which atoms are shown, which model, the shown atoms' one array, that unchanged options keep
 // their object, that the options table gives the defaults, and that the opening look holds together
 
-const base: Atom = {
-  element: 'C',
+const base: AtomRecord = {
   x: 0,
   y: 0,
   z: 0,
-  chain: 'A',
-  residueName: 'ALA',
-  residueNumber: 1,
-  insertion: '',
+  element: 'C',
   atomName: 'CA',
   altLoc: '',
   occupancy: 1,
   bFactor: 20,
   model: 1,
-  firstConformation: true,
-  polymer: true,
+  chain: 'A',
+  labelChain: 'A',
+  residueName: 'ALA',
+  residueNumber: 1,
+  insertion: '',
   hydrogen: false,
   water: false,
-  structure: 'none',
-  u: null,
+  firstConformation: true,
+  polymer: true,
 }
-const atom = (changes: Partial<Atom>): Atom => ({ ...base, ...changes })
+
+// A structure of the atoms given, each the base atom with its changes, in order
+function structureOf(atoms: Partial<AtomRecord>[]): Structure {
+  const builder = new StructureBuilder()
+  for (const changes of atoms) builder.add({ ...base, ...changes })
+  return builder.finish()
+}
+
+// A heavy atom, a hydrogen, a water, an alternate in a later conformation and an atom of the second model, the rows 0
+// to 4 of the structure they make in that order
+const heavy: Partial<AtomRecord> = {}
+const hydrogen: Partial<AtomRecord> = { element: 'H', atomName: 'HA', hydrogen: true }
+const water: Partial<AtomRecord> = { residueName: 'HOH', residueNumber: 301, water: true, polymer: false }
+const alternate: Partial<AtomRecord> = { atomName: 'CB', altLoc: 'B', firstConformation: false }
+const later: Partial<AtomRecord> = { model: 2 }
 
 void test('isShown follows Hydrogens, Waters, Alternates and the model shown', () => {
   const shown = { hydrogens: true, waters: true, conformations: 'all' } as const
   const hidden = { hydrogens: false, waters: false, conformations: 'first' } as const
-  const heavy = atom({})
-  const hydrogen = atom({ element: 'H', hydrogen: true })
-  const water = atom({ residueName: 'HOH', water: true, polymer: false })
-  const alternate = atom({ altLoc: 'B', firstConformation: false })
-  const later = atom({ model: 2 })
+  const structure = structureOf([heavy, hydrogen, water, alternate, later])
+  const is = (atom: number, options: Pick<ViewOptions, 'hydrogens' | 'waters' | 'conformations'>, model: number | null) =>
+    isShown(structure, atom, options, model)
   for (const model of [null, 1]) {
-    assert.equal(isShown(heavy, shown, model), true)
-    assert.equal(isShown(heavy, hidden, model), true)
-    assert.equal(isShown(hydrogen, shown, model), true)
-    assert.equal(isShown(hydrogen, hidden, model), false)
-    assert.equal(isShown(hydrogen, { ...hidden, hydrogens: true }, model), true)
-    assert.equal(isShown(water, shown, model), true)
-    assert.equal(isShown(water, hidden, model), false)
-    assert.equal(isShown(water, { ...hidden, waters: true }, model), true)
-    assert.equal(isShown(alternate, shown, model), true)
-    assert.equal(isShown(alternate, hidden, model), false)
-    assert.equal(isShown(alternate, { ...hidden, conformations: 'all' }, model), true)
+    assert.equal(is(0, shown, model), true)
+    assert.equal(is(0, hidden, model), true)
+    assert.equal(is(1, shown, model), true)
+    assert.equal(is(1, hidden, model), false)
+    assert.equal(is(1, { ...hidden, hydrogens: true }, model), true)
+    assert.equal(is(2, shown, model), true)
+    assert.equal(is(2, hidden, model), false)
+    assert.equal(is(2, { ...hidden, waters: true }, model), true)
+    assert.equal(is(3, shown, model), true)
+    assert.equal(is(3, hidden, model), false)
+    assert.equal(is(3, { ...hidden, conformations: 'all' }, model), true)
   }
-  assert.equal(isShown(later, shown, null), true)
-  assert.equal(isShown(later, shown, 2), true)
-  assert.equal(isShown(later, shown, 1), false)
-  assert.equal(isShown(heavy, shown, 2), false)
+  assert.equal(is(4, shown, null), true)
+  assert.equal(is(4, shown, 2), true)
+  assert.equal(is(4, shown, 1), false)
+  assert.equal(is(0, shown, 2), false)
 })
 
 void test('shownModel is the first model, the one playing, or null for every model at once', () => {
@@ -109,39 +120,38 @@ void test('setOptions keeps the same options object while nothing changes', (t) 
   assert.equal(defaultOptions.blend, 'normal')
 })
 
-void test('shownAtoms gives the same array while the entry, Hydrogens, Waters, Alternates and the model stand', () => {
-  const heavy = atom({})
-  const hydrogen = atom({ element: 'H', hydrogen: true })
-  const water = atom({ residueName: 'HOH', water: true, polymer: false })
-  const alternate = atom({ altLoc: 'B', firstConformation: false })
-  const later = atom({ model: 2 })
+void test('shownAtoms gives the same selection while the entry, Hydrogens, Waters, Alternates and the model stand', () => {
   const atoms = [heavy, hydrogen, water, alternate, later]
-  const state = (changes: Partial<ViewOptions>, model = 1) => ({ atoms, options: { ...defaultOptions, ...changes }, models: [1, 2], model })
+  const structure = structureOf(atoms)
+  const state = (changes: Partial<ViewOptions>, model = 1) => ({ structure, options: { ...defaultOptions, ...changes }, models: [1, 2], model })
+  const rows = (selected: ReturnType<typeof shownAtoms>) => [...selected.rows]
   const shown = shownAtoms(state({}))
-  assert.deepEqual(shown, [heavy, hydrogen])
-  // Another state with the same inputs, as every other change to the store leaves them, gives the very same array
+  assert.deepEqual(rows(shown), [0, 1])
+  assert.deepEqual([...shown.mask], [1, 1, 0, 0, 0])
+  assert.equal(shown.count, 2)
+  // Another state with the same inputs, as every other change to the store leaves them, gives the very same selection
   assert.equal(shownAtoms(state({})), shown)
   assert.equal(shownAtoms(state({ opacity: 0.5, colorBy: 'element', style: 'surface' })), shown)
   assert.equal(shownAtoms(state({ models: 'play' }, 1)), shown)
   // Any of its inputs changing gives a new one
   const fewer = shownAtoms(state({ hydrogens: false }))
   assert.notEqual(fewer, shown)
-  assert.deepEqual(fewer, [heavy])
-  assert.deepEqual(shownAtoms(state({ waters: true })), [heavy, hydrogen, water])
-  assert.deepEqual(shownAtoms(state({ conformations: 'all' })), [heavy, hydrogen, alternate])
-  assert.deepEqual(shownAtoms(state({ models: 'all' })), [heavy, hydrogen, later])
-  assert.deepEqual(shownAtoms(state({ models: 'play' }, 2)), [later])
+  assert.deepEqual(rows(fewer), [0])
+  assert.deepEqual(rows(shownAtoms(state({ waters: true }))), [0, 1, 2])
+  assert.deepEqual(rows(shownAtoms(state({ conformations: 'all' }))), [0, 1, 3])
+  assert.deepEqual(rows(shownAtoms(state({ models: 'all' }))), [0, 1, 4])
+  assert.deepEqual(rows(shownAtoms(state({ models: 'play' }, 2))), [4])
   const again = shownAtoms(state({}))
   assert.notEqual(again, shown)
   assert.deepEqual(again, shown)
-  assert.notEqual(shownAtoms({ ...state({}), atoms: [...atoms] }), again)
+  assert.notEqual(shownAtoms({ ...state({}), structure: structureOf(atoms) }), again)
   // The store's own state selects the same way
-  assert.deepEqual(shownAtoms(useStore.getState()), [])
+  assert.equal(shownAtoms(useStore.getState()).count, 0)
 })
 
-void test('an entry holds models, alternates, waters, hydrogens and ligands by its atoms and models', () => {
-  const plain = [atom({})]
-  assert.deepEqual(entryHolds({ atoms: plain, models: [1] }), {
+void test('an entry holds models, alternates, waters, hydrogens and ligands by what its structure counted', () => {
+  const plain = structureOf([heavy])
+  assert.deepEqual(entryHolds({ structure: plain }), {
     models: false,
     alternates: false,
     waters: false,
@@ -149,29 +159,32 @@ void test('an entry holds models, alternates, waters, hydrogens and ligands by i
     ligands: false,
   })
   // Before an entry loads it holds none of them
-  assert.deepEqual(entryHolds({ atoms: [], models: [] }), entryHolds({ atoms: plain, models: [1] }))
-  const full = [
-    atom({ element: 'H', hydrogen: true }),
-    atom({ residueName: 'HOH', water: true, polymer: false }),
-    atom({ altLoc: 'A' }),
-    atom({ altLoc: 'B', firstConformation: false }),
-    atom({ model: 2 }),
-    atom({ residueName: 'HEM', polymer: false }),
+  assert.deepEqual(entryHolds({ structure: emptyStructure }), entryHolds({ structure: plain }))
+  const atoms: Partial<AtomRecord>[] = [
+    hydrogen,
+    water,
+    { atomName: 'CB', altLoc: 'A' },
+    alternate,
+    later,
+    { residueName: 'HEM', residueNumber: 142, polymer: false },
   ]
-  const models = [1, 2]
-  const holds = entryHolds({ atoms: full, models })
+  const full = structureOf(atoms)
+  const holds = entryHolds({ structure: full })
   assert.deepEqual(holds, wholeEntry)
-  assert.equal(entryHolds({ atoms: full, models }), holds)
-  assert.notEqual(entryHolds({ atoms: [...full], models }), holds)
+  assert.equal(entryHolds({ structure: full }), holds)
+  assert.notEqual(entryHolds({ structure: structureOf(atoms) }), holds)
   // Each by its own atoms alone
-  assert.equal(entryHolds({ atoms: [full[0]], models: [1] }).hydrogens, true)
-  assert.equal(entryHolds({ atoms: [full[0]], models: [1] }).waters, false)
-  assert.equal(entryHolds({ atoms: [full[1]], models: [1] }).waters, true)
-  assert.equal(entryHolds({ atoms: [full[2]], models: [1] }).alternates, true)
+  const alone = (atom: Partial<AtomRecord>) => entryHolds({ structure: structureOf([atom]) })
+  assert.equal(alone(hydrogen).hydrogens, true)
+  assert.equal(alone(hydrogen).waters, false)
+  assert.equal(alone(water).waters, true)
+  assert.equal(alone({ altLoc: 'A' }).alternates, true)
   // A water is outside the polymer chains, as a ligand is, and isn't one
-  assert.equal(entryHolds({ atoms: [full[1]], models: [1] }).ligands, false)
-  assert.equal(entryHolds({ atoms: [full[5]], models: [1] }).ligands, true)
-  assert.equal(entryHolds({ atoms: plain, models }).models, true)
+  assert.equal(alone(water).ligands, false)
+  assert.equal(alone({ residueName: 'HEM', polymer: false }).ligands, true)
+  // A ligand only in a later conformation isn't one
+  assert.equal(alone({ residueName: 'HEM', polymer: false, altLoc: 'B', firstConformation: false }).ligands, false)
+  assert.equal(entryHolds({ structure: structureOf([heavy, later]) }).models, true)
 })
 
 void test('the options table gives the defaults, in the panel folders, with every key of the options', () => {
