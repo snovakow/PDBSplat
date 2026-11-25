@@ -40,16 +40,10 @@ export function cutDepth(camera: Camera) {
   return camera instanceof PerspectiveCamera ? Math.max(camera.near, clipDepth.value) : 0
 }
 
-const viewPoint = new Vector3()
 const forward = new Vector3()
 
-// Whether a point lies beyond the cut, where it's drawn rather than cut away. It reads the camera's matrices as its
-// last render left them, which is the view the pointer is over
-export function beyondCut(point: Vector3, camera: Camera) {
-  return -viewPoint.copy(point).applyMatrix4(camera.matrixWorldInverse).z >= cutDepth(camera)
-}
-
-// How far along a ray from the camera the cut lies. The ray's direction has unit length
+// How far along a ray from the camera the cut lies, which is as far along it in any space a rigid matrix takes the ray
+// to, as a pick's is taken into the structure's. The ray's direction has unit length
 export function cutAlong(ray: Ray, camera: Camera) {
   return cutDepth(camera) / ray.direction.dot(camera.getWorldDirection(forward))
 }

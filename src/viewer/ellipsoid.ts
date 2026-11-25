@@ -12,6 +12,7 @@ import {
   length,
   max,
   mix,
+  modelWorldMatrix,
   normalize,
   positionGeometry,
   positionView,
@@ -31,7 +32,9 @@ import { ellipsoidAttributes, surfaceDeviations } from './ellipsoidGeometry.ts'
 // its density, and the spheres style its surface, two standard deviations out. Each is drawn as one flat rectangle
 // that covers it on screen, an instance of a quad, and every pixel of the rectangle crosses its own ray with the
 // ellipsoid itself, so that the outline, the depth and the facing are the ellipsoid's own, and nothing is approximated
-// by a flat disc. The instances' centres and shapes are in scene coordinates, and their object is never moved
+// by a flat disc. The instances' centres and shapes are in the structure's own coordinates, and its object places them
+// in the scene: the vertex stage moves each centre by the object's matrix and turns each shape by its rotation, so
+// that a pixel is handed its ellipsoid in scene coordinates, wherever the object is placed
 
 // An ellipsoid's surface lies where its own measure of distance from its centre, squared, is this
 const surfaceDistanceSquared = surfaceDeviations * surfaceDeviations
@@ -66,6 +69,16 @@ function times(a: Node<'vec3'>, b: Node<'vec3'>, v: Node<'vec3'>) {
   return vec3(dot(a, v), dot(vec3(a.y, b.x, b.y), v), dot(vec3(a.z, b.y, b.z), v))
 }
 
+// A symmetric matrix, given as above, turned by a rotation whose columns are u, v and w: R S Rᵀ, in the same layout.
+// Each of its columns is R times S times the matching row of R
+function turned(a: Node<'vec3'>, b: Node<'vec3'>, u: Node<'vec3'>, v: Node<'vec3'>, w: Node<'vec3'>) {
+  const rotate = (x: Node<'vec3'>) => u.mul(x.x).add(v.mul(x.y)).add(w.mul(x.z))
+  const columnX = rotate(times(a, b, vec3(u.x, v.x, w.x))).toVar()
+  const columnY = rotate(times(a, b, vec3(u.y, v.y, w.y))).toVar()
+  const columnZ = rotate(times(a, b, vec3(u.z, v.z, w.z)))
+  return { a: columnX, b: vec3(columnY.y, columnY.z, columnZ.z).toVar() }
+}
+
 // A symmetric matrix's cofactors, which are its inverse times its determinant, in the same layout
 function cofactorsA(a: Node<'vec3'>, b: Node<'vec3'>) {
   return vec3(b.x.mul(b.z).sub(b.y.mul(b.y)), a.z.mul(b.y).sub(a.y.mul(b.z)), a.y.mul(b.y).sub(a.z.mul(b.x)))
@@ -79,7 +92,17 @@ function cofactorsB(a: Node<'vec3'>, b: Node<'vec3'>) {
 // further out, so it covers the ellipsoid from any view, and a little more of the screen than it needs. The camera's
 // projection is taken as centred, as a perspective camera's is without a view offset
 export const ellipsoidVertex = Fn(() => {
-  const viewCentre = cameraViewMatrix.mul(vec4(centre, 1)).xyz.toVar()
+  // The ellipsoid in scene coordinates: its centre placed by the structure's object, and its shape turned by the
+  // object's rotation, whose columns are where the object takes its own axes
+  const placed = modelWorldMatrix.mul(vec4(centre, 1)).xyz.toVar()
+  const { a: placedA, b: placedB } = turned(
+    shapeA,
+    shapeB,
+    modelWorldMatrix.mul(vec4(1, 0, 0, 0)).xyz,
+    modelWorldMatrix.mul(vec4(0, 1, 0, 0)).xyz,
+    modelWorldMatrix.mul(vec4(0, 0, 1, 0)).xyz,
+  )
+  const viewCentre = cameraViewMatrix.mul(vec4(placed, 1)).xyz.toVar()
   const depth = viewCentre.z.negate().toVar()
 
   // A pixel's width at the centre's depth, from the projection's vertical scale and the height drawn to. The widening
@@ -87,20 +110,20 @@ export const ellipsoidVertex = Fn(() => {
   const focal = cameraProjectionMatrix.mul(vec4(0, 1, 0, 0)).y
   const pixel = max(depth, cameraNear).mul(2).div(focal.mul(screenSize.y))
   const widening = pixel.mul(pixel).mul(pixelVariance).toVar()
-  const a = shapeA.add(vec3(widening, 0, 0)).toVar()
-  const b = shapeB.add(vec3(widening, 0, widening)).toVar()
+  const a = placedA.add(vec3(widening, 0, 0)).toVar()
+  const b = placedB.add(vec3(widening, 0, widening)).toVar()
   const widenedA = cofactorsA(a, b).toVar()
   const widenedB = cofactorsB(a, b).toVar()
   const determinant = dot(a, widenedA)
-  centreOf.assign(centre)
+  centreOf.assign(placed)
   inverseA.assign(widenedA.div(determinant))
   inverseB.assign(widenedB.div(determinant))
   paintOf.assign(paint)
 
   // A widened Gaussian is dimmed so that it gives off the light it did: by the ratio of the areas the two cover as
   // seen from the camera. Seen along a direction, a Gaussian's area goes as the root of its cofactors' form on it
-  const towards = normalize(centre.sub(cameraPosition)).toVar()
-  const narrow = dot(towards, times(cofactorsA(shapeA, shapeB), cofactorsB(shapeA, shapeB), towards))
+  const towards = normalize(placed.sub(cameraPosition)).toVar()
+  const narrow = dot(towards, times(cofactorsA(placedA, placedB), cofactorsB(placedA, placedB), towards))
   const wide = dot(towards, times(widenedA, widenedB, towards))
   dimmingOf.assign(sqrt(max(narrow.div(wide), 0)))
 

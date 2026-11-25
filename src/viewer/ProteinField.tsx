@@ -1,6 +1,15 @@
-import { useThree } from '@react-three/fiber'
-import { useEffect, useRef } from 'react'
-import { BackSide, BoxGeometry, CustomBlending, Mesh, OneFactor, OneMinusSrcAlphaFactor } from 'three'
+import { useEffect, useEffectEvent, useRef } from 'react'
+import {
+  BackSide,
+  BoxGeometry,
+  CustomBlending,
+  Mesh,
+  OneFactor,
+  OneMinusSrcAlphaFactor,
+  Ray,
+  Vector3,
+  type Object3D,
+} from 'three'
 import { NodeMaterial } from 'three/webgpu'
 import { vdwRadii } from '../pdb/elements.ts'
 import type { ShownAtoms, Structure } from '../pdb/structure.ts'
@@ -10,11 +19,14 @@ import { requestField } from '../surface/surfaceWorker.ts'
 import { createAtomTable, paintAtomTable, type AtomTable, type TablePaint } from './atomTable.ts'
 import type { Bounds } from './bounds.ts'
 import { fieldMarch, type FieldMarch } from './field.ts'
-import { setDrawnReach } from './nearPlane.ts'
+import { cutAlong, setDrawnReach } from './nearPlane.ts'
+import { rayInto } from './placement.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 
 interface Props {
   bounds: Bounds
+  // The structure's object, which the box is a child of
+  structureObject: Object3D
 }
 
 // A drawn field, with what a recolour needs: the atoms it was sampled from and their structure, and the table its
@@ -34,10 +46,9 @@ interface Drawn {
   field: Field | null
 }
 
-// The shown atoms' density, sampled on a grid in a worker, and drawn as a cloud by a ray march through the box the
-// grid fills, coloured by the atom nearest each point
-export function ProteinField({ bounds }: Props) {
-  const get = useThree((s) => s.get)
+// The shown atoms' density, sampled on a grid in a worker where the file puts them, and drawn as a cloud by a ray march
+// through the box the grid fills, placed by the structure's object and coloured by the atom nearest each point
+export function ProteinField({ bounds, structureObject }: Props) {
   const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
@@ -45,13 +56,14 @@ export function ProteinField({ bounds }: Props) {
   const scale = useStore((s) => s.options.scale)
   const resolution = useStore((s) => s.options.resolution)
   const drawn = useRef<Drawn | null>(null)
+  // How far from the structure's centre, as its bounds stand now, a box of this middle and diagonal reaches
+  const reachOf = useEffectEvent((middle: Vector3, diagonal: number) => middle.distanceTo(bounds.center) + diagonal / 2)
 
-  // The box is a unit cube scaled and placed to each field's grid. Its back faces are drawn, so that the march runs
-  // from the camera to the far side of the box whichever side the camera is on, and the cloud is laid over what's
-  // behind it by the alpha the march gives, with its colour already multiplied by it. It writes no depth, as a cloud
-  // hides nothing
+  // The box's geometry is each field's grid, as the march reads it, and the box itself is never moved, so that its
+  // own space is the structure's. Its back faces are drawn, so that the march runs from the camera to the far side of
+  // the box whichever side the camera is on, and the cloud is laid over what's behind it by the alpha the march gives,
+  // with its colour already multiplied by it. It writes no depth, as a cloud hides nothing
   useEffect(() => {
-    const { scene } = get()
     const march = fieldMarch()
     const material = new NodeMaterial()
     material.colorNode = march.colorNode
@@ -63,17 +75,17 @@ export function ProteinField({ bounds }: Props) {
     material.blendDst = OneMinusSrcAlphaFactor
     const box = new Mesh(new BoxGeometry(1, 1, 1), material)
     box.visible = false
-    scene.add(box)
+    structureObject.add(box)
     drawn.current = { box, march, field: null }
     return () => {
       if (drawn.current) discard(drawn.current)
       drawn.current = null
-      scene.remove(box)
+      structureObject.remove(box)
       box.geometry.dispose()
       material.dispose()
       march.dispose()
     }
-  }, [get])
+  }, [structureObject])
 
   useEffect(() => {
     const current = drawn.current
@@ -91,9 +103,9 @@ export function ProteinField({ bounds }: Props) {
     const elementRadii = vdwRadii(structure.elements)
     for (let i = 0; i < shown.count; i++) {
       const atom = shown.rows[i]
-      centers[i * 3] = positions[atom * 3] - bounds.center.x
-      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
-      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
+      centers[i * 3] = positions[atom * 3]
+      centers[i * 3 + 1] = positions[atom * 3 + 1]
+      centers[i * 3 + 2] = positions[atom * 3 + 2]
       radii[i] = elementRadii[element[atom]] * scale
     }
 
@@ -108,11 +120,14 @@ export function ProteinField({ bounds }: Props) {
         const table = createAtomTable(shown.count)
         paintAtomTable(table, paintOf(shown, structure, options.colorBy, options.burial))
 
-        // A ray picks the atom whose sphere it enters first, among those this field was sampled from. Each field
-        // brings its own pick, so that a pointer held still is tested again when a new field is drawn
+        // A ray picks the atom whose sphere it enters first, among those this field was sampled from, tested in the
+        // structure's own space, where the spheres are. Each field brings its own pick, so that a pointer held still is
+        // tested again when a new field is drawn
         const sphereHit: SphereHit = { index: -1, distance: 0 }
+        const local = new Ray()
         const pick: PickTest = (raycaster, hit) => {
-          nearestSphere(raycaster.ray, centers, radii, raycaster.camera, sphereHit)
+          const cut = cutAlong(raycaster.ray, raycaster.camera)
+          nearestSphere(rayInto(raycaster.ray, structureObject, local), centers, radii, cut, sphereHit)
           if (sphereHit.index < 0 || sphereHit.distance >= hit.distance) return
           hit.atom = shown.rows[sphereHit.index]
           hit.distance = sphereHit.distance
@@ -122,11 +137,13 @@ export function ProteinField({ bounds }: Props) {
         target.march.show(field, table)
         const [nx, ny, nz] = field.size
         const { box } = target
-        box.scale.set((nx - 1) * field.spacing, (ny - 1) * field.spacing, (nz - 1) * field.spacing)
-        box.position.fromArray(field.origin).addScaledVector(box.scale, 0.5)
+        const extent = new Vector3((nx - 1) * field.spacing, (ny - 1) * field.spacing, (nz - 1) * field.spacing)
+        const middle = new Vector3().fromArray(field.origin).addScaledVector(extent, 0.5)
+        box.geometry.dispose()
+        box.geometry = new BoxGeometry(extent.x, extent.y, extent.z).translate(middle.x, middle.y, middle.z)
         box.visible = true
         // The cloud reaches no farther from the structure's centre than the box's corners
-        setDrawnReach(box.position.length() + box.scale.length() / 2)
+        setDrawnReach(reachOf(middle, extent.length()))
         target.field = { table, structure, shown, unregister: useStore.getState().registerPick(pick) }
         console.info(
           `PDBSplat: field of ${shown.count} atoms at ${field.spacing.toFixed(2)} Å: ` +
@@ -140,7 +157,7 @@ export function ProteinField({ bounds }: Props) {
     return () => {
       if (useStore.getState().options.models !== 'play') request.cancel()
     }
-  }, [structure, shown, bounds, scale, resolution])
+  }, [structureObject, structure, shown, scale, resolution])
 
   // A new colouring or Burial repaints the table the march reads, without sampling again
   useEffect(() => {

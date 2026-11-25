@@ -1,6 +1,5 @@
-import { useThree } from '@react-three/fiber'
-import { useEffect, useRef } from 'react'
-import { BackSide, BufferAttribute, BufferGeometry, Mesh, type Object3D } from 'three'
+import { useEffect, useEffectEvent, useRef } from 'react'
+import { BackSide, BufferAttribute, BufferGeometry, Mesh, Ray, type Object3D, type Sphere } from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { vdwRadii } from '../pdb/elements.ts'
 import type { ShownAtoms, Structure } from '../pdb/structure.ts'
@@ -9,13 +8,16 @@ import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
 import type { Bounds } from './bounds.ts'
-import { setDrawnReach } from './nearPlane.ts'
+import { cutAlong, setDrawnReach } from './nearPlane.ts'
+import { rayInto } from './placement.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 import { cutMask, meshColor, samePlacement } from './shading.ts'
 import { isBackShell } from './styles.ts'
 
 interface Props {
   bounds: Bounds
+  // The structure's object, which the meshes are children of
+  structureObject: Object3D
 }
 
 // A see-through surface's draws, in the order they go, each ahead of the colour's at three's default of 0: the far
@@ -44,9 +46,9 @@ interface Surface {
   unregister: () => void
 }
 
-// The shown atoms' surface, meshed by marching cubes in a worker, and lit from the viewer, as the spheres are
-export function ProteinSurface({ bounds }: Props) {
-  const get = useThree((s) => s.get)
+// The shown atoms' surface, meshed by marching cubes in a worker where the file puts them, placed by the structure's
+// object, and lit from the viewer, as the spheres are
+export function ProteinSurface({ bounds, structureObject }: Props) {
   const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
@@ -60,6 +62,8 @@ export function ProteinSurface({ bounds }: Props) {
   const backMaterial = useRef<MeshBasicNodeMaterial | null>(null)
   const backDepthMaterial = useRef<MeshBasicNodeMaterial | null>(null)
   const surface = useRef<Surface | null>(null)
+  // How far from the structure's centre, as its bounds stand now, a mesh within a bounding sphere reaches
+  const reachOf = useEffectEvent((bounding: Sphere) => bounding.center.distanceTo(bounds.center) + bounding.radius)
 
   // The materials serve every surface while this style is on, and go with the last one. The depth-only materials are
   // transparent, though they write no colour, so that they list with the colour materials and draw in their order
@@ -81,7 +85,7 @@ export function ProteinSurface({ bounds }: Props) {
     backMaterial.current = back
     backDepthMaterial.current = backDepthOnly
     return () => {
-      if (surface.current) discard(get().scene, surface.current)
+      if (surface.current) discard(structureObject, surface.current)
       surface.current = null
       material.current = null
       depthMaterial.current = null
@@ -92,17 +96,16 @@ export function ProteinSurface({ bounds }: Props) {
       back.dispose()
       backDepthOnly.dispose()
     }
-  }, [get])
+  }, [structureObject])
 
   useEffect(() => {
-    const { scene } = get()
     // A new entry's surface goes at once; for a changed option, the old one stays until the new one is ready
     if (surface.current && surface.current.structure !== structure) {
-      discard(scene, surface.current)
+      discard(structureObject, surface.current)
       surface.current = null
     }
     if (shown.count === 0) {
-      if (surface.current) discard(scene, surface.current)
+      if (surface.current) discard(structureObject, surface.current)
       surface.current = null
       return undefined
     }
@@ -113,9 +116,9 @@ export function ProteinSurface({ bounds }: Props) {
     const elementRadii = vdwRadii(structure.elements)
     for (let i = 0; i < shown.count; i++) {
       const atom = shown.rows[i]
-      centers[i * 3] = positions[atom * 3] - bounds.center.x
-      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
-      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
+      centers[i * 3] = positions[atom * 3]
+      centers[i * 3 + 1] = positions[atom * 3 + 1]
+      centers[i * 3 + 2] = positions[atom * 3 + 2]
       radii[i] = elementRadii[element[atom]] * scale
     }
 
@@ -138,11 +141,14 @@ export function ProteinSurface({ bounds }: Props) {
         geometry.setIndex(new BufferAttribute(built.indices, 1))
         geometry.computeBoundingSphere()
 
-        // A ray picks the atom whose sphere it enters first, among those this surface was meshed from. Each surface
-        // brings its own pick, so that a pointer held still is tested again when a new surface is drawn
+        // A ray picks the atom whose sphere it enters first, among those this surface was meshed from, tested in the
+        // structure's own space, where the spheres are. Each surface brings its own pick, so that a pointer held still
+        // is tested again when a new surface is drawn
         const sphereHit: SphereHit = { index: -1, distance: 0 }
+        const local = new Ray()
         const pick: PickTest = (raycaster, hit) => {
-          nearestSphere(raycaster.ray, centers, radii, raycaster.camera, sphereHit)
+          const cut = cutAlong(raycaster.ray, raycaster.camera)
+          nearestSphere(rayInto(raycaster.ray, structureObject, local), centers, radii, cut, sphereHit)
           if (sphereHit.index < 0 || sphereHit.distance >= hit.distance) return
           hit.atom = shown.rows[sphereHit.index]
           hit.distance = sphereHit.distance
@@ -164,11 +170,11 @@ export function ProteinSurface({ bounds }: Props) {
         next.backDepth.renderOrder = backDepthOrder
         const { options } = useStore.getState()
         paint(next, options.colorBy, options.burial)
-        if (surface.current) discard(scene, surface.current)
-        scene.add(next.backDepth, next.back, next.depth, next.mesh)
+        if (surface.current) discard(structureObject, surface.current)
+        structureObject.add(next.backDepth, next.back, next.depth, next.mesh)
         // The mesh reaches as far from the structure's centre as its bounding sphere does
         const bounding = geometry.boundingSphere
-        if (bounding) setDrawnReach(bounding.center.length() + bounding.radius)
+        if (bounding) setDrawnReach(reachOf(bounding))
         surface.current = next
         console.info(
           `PDBSplat: surface of ${shown.count} atoms at ${built.spacing.toFixed(2)} Å: ` +
@@ -183,7 +189,7 @@ export function ProteinSurface({ bounds }: Props) {
     return () => {
       if (useStore.getState().options.models !== 'play') request.cancel()
     }
-  }, [get, structure, shown, bounds, scale, resolution])
+  }, [structureObject, structure, shown, scale, resolution])
 
   // A new colouring or Burial repaints the vertices from their atoms, without meshing again
   useEffect(() => {
@@ -229,8 +235,8 @@ function paint({ colors, structure, shown, owners }: Surface, colorBy: ColorBy, 
   colors.needsUpdate = true
 }
 
-function discard(scene: Object3D, { mesh, depth, back, backDepth, unregister }: Surface) {
+function discard(parent: Object3D, { mesh, depth, back, backDepth, unregister }: Surface) {
   unregister()
-  scene.remove(mesh, depth, back, backDepth)
+  parent.remove(mesh, depth, back, backDepth)
   mesh.geometry.dispose()
 }

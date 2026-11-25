@@ -4,6 +4,7 @@ import {
   InstancedBufferGeometry,
   InstancedInterleavedBuffer,
   InterleavedBufferAttribute,
+  type Vector3Like,
 } from 'three'
 
 // The geometry a set of ellipsoids is drawn from: one quad, drawn once for each, with each one's centre, covariance
@@ -41,11 +42,11 @@ export function writeRound(target: Float32Array, offset: number, deviation: numb
   target[offset + 5] = variance
 }
 
-// How far from the origin any of the ellipsoids at centres, x, y, z triples, with covariances, six floats each,
-// reaches, or a little more: each one's centre's distance, and the farthest its surface reaches from its centre, which
-// is twice the root of its covariance's largest eigenvalue, taken at the largest of the rows' sums of magnitudes, which
-// is no smaller than that eigenvalue, and is it for a covariance with no cross terms
-export function ellipsoidsReach(centers: Float32Array, covariances: Float32Array) {
+// How far from the structure's centre any of the ellipsoids at centres, x, y, z triples, with covariances, six floats
+// each, reaches, or a little more: each one's centre's distance from it, and the farthest its surface reaches from its
+// own centre, which is twice the root of its covariance's largest eigenvalue, taken at the largest of the rows' sums of
+// magnitudes, which is no smaller than that eigenvalue, and is it for a covariance with no cross terms
+export function ellipsoidsReach(centers: Float32Array, covariances: Float32Array, center: Vector3Like) {
   let reach = 0
   for (let i = 0; i < centers.length / 3; i++) {
     const at = i * covarianceSize
@@ -56,14 +57,15 @@ export function ellipsoidsReach(centers: Float32Array, covariances: Float32Array
     const yz = Math.abs(covariances[at + 4])
     const zz = Math.abs(covariances[at + 5])
     const largest = Math.max(xx + xy + xz, xy + yy + yz, xz + yz + zz)
-    const centre = Math.hypot(centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2])
+    const centre = Math.hypot(centers[i * 3] - center.x, centers[i * 3 + 1] - center.y, centers[i * 3 + 2] - center.z)
     reach = Math.max(reach, centre + surfaceDeviations * Math.sqrt(largest))
   }
   return reach
 }
 
-// The geometry for ellipsoids at centres, x, y, z triples in scene coordinates, with covariances, six floats each.
-// Both arrays are the geometry's own from here on, and the paint starts clear
+// The geometry for ellipsoids at centres, x, y, z triples in the structure's own coordinates, which its object places
+// in the scene, with covariances, six floats each. Both arrays are the geometry's own from here on, and the paint
+// starts clear
 export function createEllipsoids(centers: Float32Array, covariances: Float32Array): Ellipsoids {
   const count = centers.length / 3
   const geometry = new InstancedBufferGeometry()

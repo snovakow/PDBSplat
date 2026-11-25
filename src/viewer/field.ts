@@ -14,8 +14,9 @@ import {
   Loop,
   max,
   min,
+  modelWorldMatrixInverse,
+  positionLocal,
   positionView,
-  positionWorld,
   round,
   screenCoordinate,
   smoothstep,
@@ -35,7 +36,9 @@ import { cueFar, cueNear, cutDepth, depthCue, optionUniforms } from './shading.t
 // The field: the atoms' density, sampled on a grid by the surface's worker and packed into two 3D textures, drawn as
 // a cloud by a ray march through the box the grid fills. Each pixel of the box's back face casts a ray from the camera
 // and steps along it, and at each step the cloud takes a share of the light by the density there, in the colour of
-// the atom that owns the point, read from the atom table. The pixel shows what the ray gathered
+// the atom that owns the point, read from the atom table. The pixel shows what the ray gathered. The grid lies where
+// the file puts the atoms, and the box is a child of the structure's object with no placement of its own, so the march
+// runs in the box's own space, which is the structure's
 
 // How much of the light a unit of density takes per ångström at Opacity 1, chosen by eye on the crambin and antibody
 // examples: a protein's core reads near opaque at the default Opacity, and its edge as haze
@@ -74,7 +77,7 @@ export function fieldMarch(): FieldMarch {
   const tableWidth = uniform(empty.texture.image.width, 'int')
   // How many atoms the table holds: a point no atom reaches carries an index past them all
   const atomCount = uniform(0, 'int')
-  // The grid's lowest corner in scene units, its points per axis and its spacing
+  // The grid's lowest corner in the structure's own coordinates, its points per axis and its spacing
   const origin = uniform(new Vector3())
   const points = uniform(new Vector3(1, 1, 1))
   const spacing = uniform(1)
@@ -83,15 +86,17 @@ export function fieldMarch(): FieldMarch {
   const maxSteps = uniform(1, 'int')
 
   const colorNode = Fn(() => {
-    // The ray from the camera through this fragment of the box's back face, where it ends, in scene units
-    const toFragment = positionWorld.sub(cameraPosition).toVar()
+    // The ray from the camera through this fragment of the box's back face, where it ends, in the structure's own
+    // space, whose distances are the scene's: the structure's object is only turned and shifted
+    const camera = modelWorldMatrixInverse.mul(vec4(cameraPosition, 1)).xyz.toVar()
+    const toFragment = positionLocal.sub(camera).toVar()
     const end = length(toFragment).toVar()
     const direction = toFragment.div(end).toVar()
     // Where the ray enters the box: along each axis the nearer of its two faces' crossings, and the latest of those
     const nudged = step(0, direction).mul(2).sub(1).mul(max(abs(direction), leastDirection))
     const extent = points.sub(1).mul(spacing)
-    const toLow = origin.sub(cameraPosition).div(nudged)
-    const toHigh = origin.add(extent).sub(cameraPosition).div(nudged)
+    const toLow = origin.sub(camera).div(nudged)
+    const toHigh = origin.add(extent).sub(camera).div(nudged)
     const nearer = min(toLow, toHigh)
     const entry = max(max(nearer.x, nearer.y), nearer.z)
     // Where it crosses the cut, the view depth nothing is drawn nearer than, so that Clip cuts the cloud as it cuts
@@ -116,7 +121,7 @@ export function fieldMarch(): FieldMarch {
       // The point in grid coordinates, a point apart, and the density there, read between the points. The texture
       // has one level, which is named so that the read needs no screen derivatives, which WGSL allows only where
       // every pixel takes the same path, and a ray that has stopped doesn't
-      const g = cameraPosition.add(direction.mul(t)).sub(origin).div(spacing).toVar()
+      const g = camera.add(direction.mul(t)).sub(origin).div(spacing).toVar()
       const d = densityNode.sample(g.add(0.5).div(points)).level(float(0)).r.toVar()
       If(d.greaterThan(0), () => {
         // The owner at the nearest point, whose index lies past the atoms where no atom reaches it

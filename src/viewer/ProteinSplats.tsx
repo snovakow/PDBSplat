@@ -1,6 +1,15 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useEffectEvent, useRef } from 'react'
-import { AdditiveBlending, Mesh, PerspectiveCamera, Vector3, type Camera, type InstancedBufferGeometry } from 'three'
+import {
+  AdditiveBlending,
+  Mesh,
+  PerspectiveCamera,
+  Ray,
+  Vector3,
+  type Camera,
+  type InstancedBufferGeometry,
+  type Object3D,
+} from 'three'
 import { NodeMaterial } from 'three/webgpu'
 import { useShallow } from 'zustand/react/shallow'
 import { vdwRadii } from '../pdb/elements.ts'
@@ -30,6 +39,7 @@ import {
   type Level,
 } from './levels.ts'
 import { cutAlong, setDrawnReach } from './nearPlane.ts'
+import { rayInto } from './placement.ts'
 import { invertCovariances, nearestEllipsoid, type EllipsoidHit } from './rayEllipsoids.ts'
 import { layerNodes, softColor, type Layer } from './shading.ts'
 import { compositeOf, hasGhosts, hasSolids, isBackShell } from './styles.ts'
@@ -44,6 +54,8 @@ const bFactorPerVariance = 8 * Math.PI * Math.PI
 
 interface Props {
   bounds: Bounds
+  // The structure's object, which the meshes are children of
+  structureObject: Object3D
 }
 
 // A level while it's drawn: its ellipsoids, the meshes that draw them, one for each layer it's drawn in, and, for a
@@ -93,12 +105,12 @@ function showLevel({ levels: built, diameters }: Drawn, camera: Camera, viewport
   }
 }
 
-// One ellipsoid per shown atom, round or its thermal ellipsoid, centred on the structure's centroid, or one per residue
-// or per chain, each the moment match of its atoms', as Detail asks, and every level under auto. Each is an instance
-// of one quad, with its paint as an attribute, so that a new colour or alpha repaints in place and rebuilds nothing.
-// Nothing is ever sorted: the spheres are told apart by their surfaces' depths, and the soft splats are summed or
-// glow, in an order that doesn't matter
-export function ProteinSplats({ bounds }: Props) {
+// One ellipsoid per shown atom, round or its thermal ellipsoid, where the file puts it, or one per residue or per
+// chain, each the moment match of its atoms', as Detail asks, and every level under auto, all placed by the
+// structure's object. Each is an instance of one quad, with its paint as an attribute, so that a new colour or alpha
+// repaints in place and rebuilds nothing. Nothing is ever sorted: the spheres are told apart by their surfaces'
+// depths, and the soft splats are summed or glow, in an order that doesn't matter
+export function ProteinSplats({ bounds, structureObject }: Props) {
   const get = useThree((s) => s.get)
   const scale = useStore((s) => s.options.scale)
   const thermal = useStore((s) => s.options.thermal)
@@ -134,6 +146,10 @@ export function ProteinSplats({ bounds }: Props) {
   // Paints the new tables from the inputs as they stand now, so that the build below needn't depend on them and no
   // frame draws a table blank
   const paintNow = useEffectEvent((current: Drawn) => paintFrom(current, paint))
+  // How far from the structure's centre, as its bounds stand now, ellipsoids reach
+  const reachOf = useEffectEvent((centers: Float32Array, covariances: Float32Array) =>
+    ellipsoidsReach(centers, covariances, bounds.center),
+  )
 
   useEffect(() => {
     if (shown.count === 0) return undefined
@@ -147,9 +163,9 @@ export function ProteinSplats({ bounds }: Props) {
 
     for (let i = 0; i < shown.count; i++) {
       const atom = shown.rows[i]
-      centers[i * 3] = positions[atom * 3] - bounds.center.x
-      centers[i * 3 + 1] = positions[atom * 3 + 1] - bounds.center.y
-      centers[i * 3 + 2] = positions[atom * 3 + 2] - bounds.center.z
+      centers[i * 3] = positions[atom * 3]
+      centers[i * 3 + 1] = positions[atom * 3 + 1]
+      centers[i * 3 + 2] = positions[atom * 3 + 2]
 
       const radius = radii[element[atom]] * scale
       weights[i] = radius * radius * radius
@@ -165,7 +181,7 @@ export function ProteinSplats({ bounds }: Props) {
     }
 
     const layered = composite === 'layered'
-    const { scene, camera, size } = get()
+    const { camera, size } = get()
     const current: Drawn = {
       paint: new Uint8ClampedArray(shown.count * paintSize),
       painted: null,
@@ -233,10 +249,10 @@ export function ProteinSplats({ bounds }: Props) {
         material.blending = AdditiveBlending
         if (composite === 'summed') material.premultipliedAlpha = true
       }
-      for (const mesh of meshes) scene.add(mesh)
+      for (const mesh of meshes) structureObject.add(mesh)
       current.levels.push({ instances, meshes, grouping })
       current.diameters.push(typicalDiameter(levelCovariances, surfaceDeviations))
-      reach = Math.max(reach, ellipsoidsReach(levelCenters, levelCovariances))
+      reach = Math.max(reach, reachOf(levelCenters, levelCovariances))
       return instances
     }
 
@@ -263,12 +279,14 @@ export function ProteinSplats({ bounds }: Props) {
 
     // A ray picks the atom whose ellipsoid it meets first, whichever level is drawn, so the label names the atom
     // under the pointer at every level, and an atom of the blob under it. It passes through an atom faded far out of
-    // focus, and through whatever the cut has taken
+    // focus, and through whatever the cut has taken. The ray is tested in the structure's own space, where the atoms'
+    // ellipsoids are, and the cut is as far along it there as in the scene
     const found: EllipsoidHit = { index: -1, distance: Infinity }
     const pickable = (index: number) => isPickable(current.paint, index)
+    const local = new Ray()
     const pick: PickTest = (raycaster, hit) => {
       const cut = cutAlong(raycaster.ray, raycaster.camera)
-      nearestEllipsoid(raycaster.ray, centers, inverses, cut, found, pickable)
+      nearestEllipsoid(rayInto(raycaster.ray, structureObject, local), centers, inverses, cut, found, pickable)
       if (found.index < 0 || found.distance >= hit.distance) return
       hit.atom = shown.rows[found.index]
       hit.distance = found.distance
@@ -279,14 +297,14 @@ export function ProteinSplats({ bounds }: Props) {
       unregister()
       for (const { instances, meshes } of current.levels) {
         for (const mesh of meshes) {
-          scene.remove(mesh)
+          structureObject.remove(mesh)
           mesh.material.dispose()
         }
         instances.geometry.dispose()
       }
       drawn.current = null
     }
-  }, [get, structure, shown, bounds, scale, thermal, ellipsoids, detail, composite, solids, ghosts, backShell])
+  }, [get, structureObject, structure, shown, scale, thermal, ellipsoids, detail, composite, solids, ghosts, backShell])
 
   // A new colouring, Burial, Focus, Fade or pick repaints the ellipsoids, in place
   useEffect(() => {

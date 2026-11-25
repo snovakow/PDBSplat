@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import { PerspectiveCamera, Ray, Vector3 } from 'three'
 import {
   baseNear,
-  beyondCut,
   cutAlong,
   cutDepth,
   drawnReach,
@@ -68,14 +67,11 @@ void test("the cut is Clip's, or the near plane where that is farther, which a s
   // A ray 60° off the way the camera looks covers twice the distance to reach the same depth
   const slanted = new Ray(new Vector3(), new Vector3(Math.sin(Math.PI / 3), 0, -Math.cos(Math.PI / 3)))
   assert.ok(Math.abs(cutAlong(slanted, camera) - 4) < 1e-9)
-  assert.equal(beyondCut(new Vector3(0, 0, -2.5), camera), true)
-  assert.equal(beyondCut(new Vector3(0, 0, -1.5), camera), false)
   // Clip's cut, once it's farther than the near plane
   clipDepth.value = 10
   assert.equal(cutDepth(camera), 10)
   assert.equal(cutAlong(ahead, camera), 10)
-  assert.equal(beyondCut(new Vector3(3, 0, -9.5), camera), false)
-  assert.equal(beyondCut(new Vector3(3, 0, -10.5), camera), true)
+  assert.ok(Math.abs(cutAlong(slanted, camera) - 20) < 1e-9)
   // And the near plane again while the cut is nearer than it
   clipDepth.value = 1
   assert.equal(cutDepth(camera), 2)
@@ -92,6 +88,7 @@ void test('the cut follows the camera wherever it looks from', (t) => {
   camera.updateMatrixWorld()
   const towards = new Ray(camera.position.clone(), new Vector3(-1, 0, 0))
   assert.ok(Math.abs(cutAlong(towards, camera) - 5) < 1e-9)
-  assert.equal(beyondCut(new Vector3(16, 0, 0), camera), false)
-  assert.equal(beyondCut(new Vector3(14, 0, 0), camera), true)
+  // A ray 60° off the way the camera looks, in the level plane, reaches the cut's depth at twice its distance
+  const slanted = new Ray(camera.position.clone(), new Vector3(-Math.cos(Math.PI / 3), 0, Math.sin(Math.PI / 3)))
+  assert.ok(Math.abs(cutAlong(slanted, camera) - 10) < 1e-9)
 })
