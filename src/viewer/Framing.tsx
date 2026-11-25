@@ -1,6 +1,6 @@
 import type { OrbitControls } from '@react-three/drei'
 import { useFrame, useThree } from '@react-three/fiber'
-import { useEffect, type ComponentRef, type RefObject } from 'react'
+import { useEffect, useEffectEvent, type ComponentRef, type RefObject } from 'react'
 import { MathUtils, PerspectiveCamera } from 'three'
 import { useStore } from '../store.ts'
 import type { Bounds } from './bounds.ts'
@@ -18,9 +18,12 @@ interface Props {
 // near plane follows the camera
 export function Framing({ controlsRef, bounds }: Props) {
   const get = useThree((s) => s.get)
+  const entry = useStore((s) => s.id)
   const structure = useStore((s) => s.structure)
 
-  useEffect(() => {
+  // Frames the entry by its bounds as they stand when it's framed. Only a new entry is framed: a later change of its
+  // bounds, or a repeat load of the entry shown, leaves the view where it is
+  const frame = useEffectEvent(() => {
     const controls = controlsRef.current
     const { camera } = get()
     if (structure.atoms.count === 0 || !controls || !(camera instanceof PerspectiveCamera)) return
@@ -38,7 +41,11 @@ export function Framing({ controlsRef, bounds }: Props) {
     controls.maxDistance = distance * 3
     controls.target.set(0, 0, 0)
     controls.update()
-  }, [get, controlsRef, structure, bounds])
+  })
+  // Nothing is framed before the first entry arrives, and then each new one is
+  useEffect(() => {
+    if (entry !== '') frame()
+  }, [entry])
 
   // Each frame, after the controls have moved the camera, the near plane goes in front of what's drawn, as the
   // camera's distance from the structure's centre places it. The centre sits at the origin, so a turn about it leaves
