@@ -2,6 +2,11 @@
 
 Version Release Notes
 
+## 0.3.0 - 2026-11-26
+
+- Entries loaded in the background as they download, up to the PDB's largest of eleven million atoms
+- Status following each load: the download's progress and the atoms read, then whether the burial shading is still to come
+
 ## 0.2.13 - 2026-11-25
 
 - App improvements
