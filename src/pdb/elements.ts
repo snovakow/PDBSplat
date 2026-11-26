@@ -1,5 +1,3 @@
-import { Color } from 'three'
-
 // Each element's CPK colour, as Jmol colours it (jmol.sourceforge.net/jscolors), and its van der Waals radius in
 // ångströms. The radii are Bondi's (J. Phys. Chem. 1964, 68, 441) unless a comment names another source
 const elements: Record<string, { color: number; radius: number }> = {
@@ -31,12 +29,9 @@ const elements: Record<string, { color: number; radius: number }> = {
 // Jmol's colour for an unknown element, and a radius between the listed ones' for the rest
 const fallback = { color: 0xff1493, radius: 2 }
 
-// The colours as three reads them: hex is sRGB, which Color converts to the renderer's linear working space
-const colors = new Map(Object.entries(elements).map(([symbol, { color }]) => [symbol, new Color(color)]))
-const fallbackColor = new Color(fallback.color)
-
-export function elementColor(symbol: string): Color {
-  return colors.get(symbol) ?? fallbackColor
+// An element's colour, as sRGB hex
+export function elementHex(symbol: string): number {
+  return elements[symbol]?.color ?? fallback.color
 }
 
 export function vdwRadius(symbol: string): number {
@@ -47,9 +42,4 @@ export function vdwRadius(symbol: string): number {
 // index
 export function vdwRadii(symbols: readonly string[]): number[] {
   return symbols.map(vdwRadius)
-}
-
-// Each symbol's colour by its place in a symbol table
-export function elementColors(symbols: readonly string[]): Color[] {
-  return symbols.map(elementColor)
 }

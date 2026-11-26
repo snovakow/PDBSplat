@@ -4,10 +4,9 @@ import { atomText } from './atomText.ts'
 import { optionKeys, viewOptions, type Folder, type ViewOptions } from './options.ts'
 import { presetList, presets, withPreset } from './presets.ts'
 import { optionShows } from './shownOptions.ts'
-import { entryHolds, examples, firstEntry, shownAtoms, useStore, type Status } from './store.ts'
+import { statusText } from './statusText.ts'
+import { entryHolds, examples, firstEntry, shownAtoms, useStore } from './store.ts'
 import { styles } from './viewer/styles.ts'
-
-const statusText: Record<Status, string> = { idle: '', loading: 'Loading…', ready: 'Ready', failed: '' }
 
 // Each example as the panel lists it, such as "1CRN crambin"
 const exampleOptions = Object.fromEntries(examples.map((example) => [`${example.id} ${example.name}`, example.id]))
@@ -69,8 +68,8 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   )
   const id = useStore((s) => s.id)
   const title = useStore((s) => s.title)
-  const status = useStore((s) => s.status)
-  const error = useStore((s) => s.error)
+  // The latest load's state, how far it has come and whether the entry's burial has landed, as one line of text
+  const status = useStore(statusText)
   const shown = useStore((s) => shownAtoms(s).count)
   const structure = useStore((s) => s.structure)
   const picked = useStore((s) => s.picked)
@@ -167,9 +166,9 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
     set({
       entry: id ? `${id}: ${title}` : '',
       shown: id ? shown.toLocaleString('en') : '',
-      status: error ?? statusText[status],
+      status,
     })
-  }, [set, id, title, shown, status, error])
+  }, [set, id, title, shown, status])
 
   useEffect(() => {
     set({ picked: picked === null ? '' : atomText(structure, picked, manyModels) })

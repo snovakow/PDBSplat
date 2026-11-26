@@ -157,6 +157,9 @@ export interface AtomRecord {
 const startingCapacity = 1024
 const growth = 1.5
 
+// A residue has about eight atoms in a protein, and one in a water
+const atomsPerResidue = 8
+
 // The most distinct values each index type holds
 const byteLimit = 1 << 8
 const shortLimit = 1 << 16
@@ -201,7 +204,7 @@ class Names {
 // trimmed to their lengths when it finishes
 export class StructureBuilder {
   private atomCapacity: number
-  private atomCount = 0
+  private atomRows = 0
   private positions: Float32Array
   private element: Uint8Array
   private bFactor: Float32Array
@@ -270,8 +273,7 @@ export class StructureBuilder {
     this.altLoc = new Uint8Array(this.atomCapacity)
     this.atomName = new Uint16Array(this.atomCapacity)
     this.atomResidue = new Uint32Array(this.atomCapacity)
-    // A residue has about eight atoms in a protein, and one in a water
-    this.residueCapacity = Math.max(Math.ceil(this.atomCapacity / 8), 1)
+    this.residueCapacity = Math.max(Math.ceil(this.atomCapacity / atomsPerResidue), 1)
     this.residueRun = new Uint32Array(this.residueCapacity)
     this.residueNumber = new Int32Array(this.residueCapacity)
     this.residueInsertion = new Uint8Array(this.residueCapacity)
@@ -280,16 +282,34 @@ export class StructureBuilder {
     this.residueFirstAtom = new Uint32Array(this.residueCapacity + 1)
   }
 
-  // How many residues are open or closed so far, the last of them the one the last atom went into
+  // How many atoms and residues it holds so far, the last residue the one the last atom went into
+  get atomCount() {
+    return this.atomRows
+  }
+
   get residueCount() {
     return this.residueRows
+  }
+
+  // The row of the chain the last atom went into
+  get chainRow() {
+    return this.runChain.at(-1) ?? -1
+  }
+
+  // Makes room for a count of atoms all told, where it has less, so that a structure whose size is learnt as it's read
+  // grows once rather than by steps. A finished builder, whose columns are the structure's, takes no more
+  reserve(capacity: number) {
+    if (this.finished) return
+    if (capacity > this.atomCapacity) this.growAtoms(capacity)
+    const residues = Math.ceil(capacity / atomsPerResidue)
+    if (residues > this.residueCapacity) this.growResidues(residues)
   }
 
   // Adds an atom after the last, and gives its row
   add(atom: AtomRecord): number {
     if (this.finished) throw new Error('The structure is already finished')
-    const row = this.atomCount
-    if (row === this.atomCapacity) this.growAtoms()
+    const row = this.atomRows
+    if (row === this.atomCapacity) this.growAtoms(Math.ceil(this.atomCapacity * growth))
 
     const { model, chain, labelChain, residueNumber, insertion, residueName } = atom
     if (this.models.at(-1) !== model && !this.models.includes(model)) this.models.push(model)
@@ -316,7 +336,7 @@ export class StructureBuilder {
     this.altLoc[row] = atom.altLoc === '' ? 0 : this.altLocs.place(atom.altLoc)
     this.atomName[row] = this.atomNames.place(atom.atomName)
     this.atomResidue[row] = this.residueRows - 1
-    this.atomCount = row + 1
+    this.atomRows = row + 1
     this.tally(atom)
     return row
   }
@@ -330,17 +350,18 @@ export class StructureBuilder {
   // their rows
   addTensor(atom: number, u: ArrayLike<number>) {
     const last = this.tensorAtoms.at(-1)
-    if (atom >= this.atomCount || (last !== undefined && atom <= last)) {
+    if (atom >= this.atomRows || (last !== undefined && atom <= last)) {
       throw new Error('Tensors are given to atoms already added, in the order of their rows')
     }
     this.tensorAtoms.push(atom)
     for (let k = 0; k < 6; k++) this.tensorValues.push(u[k])
   }
 
-  // The structure, with every column trimmed to its length. The builder takes no more atoms after it
+  // The structure, with every column trimmed to its length, one at a time, so that a large structure is held twice
+  // over only a column at a time. The builder takes no more atoms after it
   finish(title = ''): Structure {
     this.finished = true
-    const atoms = this.atomCount
+    const atoms = this.atomRows
     const residues = this.residueRows
     const runs = this.runChain.length
     const chains = this.chainName.length
@@ -356,28 +377,43 @@ export class StructureBuilder {
       chainRuns[filled[chain]++] = run
     })
 
+    this.positions = this.positions.slice(0, atoms * 3)
+    this.element = this.element.slice(0, atoms)
+    this.bFactor = this.bFactor.slice(0, atoms)
+    this.occupancy = this.occupancy.slice(0, atoms)
+    this.flags = this.flags.slice(0, atoms)
+    this.altLoc = this.altLoc.slice(0, atoms)
+    this.atomName = this.atomName.slice(0, atoms)
+    this.atomResidue = this.atomResidue.slice(0, atoms)
+    this.residueRun = this.residueRun.slice(0, residues)
+    this.residueNumber = this.residueNumber.slice(0, residues)
+    this.residueInsertion = this.residueInsertion.slice(0, residues)
+    this.residueName = this.residueName.slice(0, residues)
+    this.residueStructure = this.residueStructure.slice(0, residues)
+    this.residueFirstAtom = this.residueFirstAtom.slice(0, residues + 1)
+
     return {
       title,
       models: this.models,
       atoms: {
         count: atoms,
-        positions: this.positions.slice(0, atoms * 3),
-        element: this.element.slice(0, atoms),
-        bFactor: this.bFactor.slice(0, atoms),
-        occupancy: this.occupancy.slice(0, atoms),
-        flags: this.flags.slice(0, atoms),
-        altLoc: this.altLoc.slice(0, atoms),
-        name: this.atomName.slice(0, atoms),
-        residue: this.atomResidue.slice(0, atoms),
+        positions: this.positions,
+        element: this.element,
+        bFactor: this.bFactor,
+        occupancy: this.occupancy,
+        flags: this.flags,
+        altLoc: this.altLoc,
+        name: this.atomName,
+        residue: this.atomResidue,
       },
       residues: {
         count: residues,
-        run: this.residueRun.slice(0, residues),
-        number: this.residueNumber.slice(0, residues),
-        insertion: this.residueInsertion.slice(0, residues),
-        name: this.residueName.slice(0, residues),
-        structure: this.residueStructure.slice(0, residues),
-        firstAtom: this.residueFirstAtom.slice(0, residues + 1),
+        run: this.residueRun,
+        number: this.residueNumber,
+        insertion: this.residueInsertion,
+        name: this.residueName,
+        structure: this.residueStructure,
+        firstAtom: this.residueFirstAtom,
       },
       runs: {
         count: runs,
@@ -428,7 +464,7 @@ export class StructureBuilder {
 
   private openResidue(number: number, insertion: string, name: string, row: number) {
     const residue = this.residueRows
-    if (residue === this.residueCapacity) this.growResidues()
+    if (residue === this.residueCapacity) this.growResidues(Math.ceil(this.residueCapacity * growth))
     this.residueRun[residue] = this.runChain.length - 1
     this.residueNumber[residue] = number
     this.residueInsertion[residue] = this.insertions.place(insertion)
@@ -457,8 +493,7 @@ export class StructureBuilder {
     }
   }
 
-  private growAtoms() {
-    const capacity = Math.ceil(this.atomCapacity * growth)
+  private growAtoms(capacity: number) {
     this.positions = resized(this.positions, capacity * 3, (length) => new Float32Array(length))
     this.element = resized(this.element, capacity, (length) => new Uint8Array(length))
     this.bFactor = resized(this.bFactor, capacity, (length) => new Float32Array(length))
@@ -470,8 +505,7 @@ export class StructureBuilder {
     this.atomCapacity = capacity
   }
 
-  private growResidues() {
-    const capacity = Math.ceil(this.residueCapacity * growth)
+  private growResidues(capacity: number) {
     this.residueRun = resized(this.residueRun, capacity, (length) => new Uint32Array(length))
     this.residueNumber = resized(this.residueNumber, capacity, (length) => new Int32Array(length))
     this.residueInsertion = resized(this.residueInsertion, capacity, (length) => new Uint8Array(length))
@@ -485,14 +519,66 @@ export class StructureBuilder {
 // A structure with no atoms, which the page holds before an entry loads
 export const emptyStructure: Structure = new StructureBuilder(1).finish()
 
+// The columns of a structure that say where its atoms are, what they are and what holds them, without their names:
+// what merging the levels and working out burial read
+export interface AtomPlaces {
+  models: number[]
+  elements: string[]
+  atoms: Pick<Atoms, 'count' | 'positions' | 'element' | 'flags' | 'residue'>
+  residues: Pick<Residues, 'run'>
+  runs: Pick<Runs, 'chain'>
+  chains: Pick<Chains, 'model'>
+}
+
+// A copy of those columns, which outlives the structure's own being handed on
+export function copyPlaces({ models, elements, atoms, residues, runs, chains }: AtomPlaces): AtomPlaces {
+  return {
+    models: [...models],
+    elements: [...elements],
+    atoms: {
+      count: atoms.count,
+      positions: atoms.positions.slice(),
+      element: atoms.element.slice(),
+      flags: atoms.flags.slice(),
+      residue: atoms.residue.slice(),
+    },
+    residues: { run: residues.run.slice() },
+    runs: { chain: runs.chain.slice() },
+    chains: { model: chains.model.slice() },
+  }
+}
+
 // The row of an atom's chain
-export function chainOf({ atoms, residues, runs }: Structure, atom: number) {
+export function chainOf({ atoms, residues, runs }: Pick<AtomPlaces, 'atoms' | 'residues' | 'runs'>, atom: number) {
   return runs.chain[residues.run[atoms.residue[atom]]]
 }
 
 // The number of an atom's model
-export function modelOf(structure: Structure, atom: number) {
+export function modelOf(structure: Pick<AtomPlaces, 'atoms' | 'residues' | 'runs' | 'chains'>, atom: number) {
   return structure.chains.model[chainOf(structure, atom)]
+}
+
+// Which atoms are shown: with or without the hydrogens and the waters, each residue's first conformation or every one,
+// and one model, by its number, or every model, for null
+export interface ShownChoice {
+  hydrogens: boolean
+  waters: boolean
+  conformations: 'first' | 'all'
+  model: number | null
+}
+
+// Whether an atom, by its flags and its model's number, is shown under a choice
+export function shownBy(flags: number, model: number, choice: ShownChoice) {
+  return (
+    (choice.hydrogens || (flags & hydrogenFlag) === 0) &&
+    (choice.waters || (flags & waterFlag) === 0) &&
+    (choice.conformations === 'all' || (flags & firstConformationFlag) !== 0) &&
+    (choice.model === null || model === choice.model)
+  )
+}
+
+export function sameChoice(a: ShownChoice, b: ShownChoice) {
+  return a.hydrogens === b.hydrogens && a.waters === b.waters && a.conformations === b.conformations && a.model === b.model
 }
 
 export function elementOf({ atoms, elements }: Structure, atom: number) {
@@ -553,7 +639,7 @@ export interface ShownAtoms {
   count: number
 }
 
-export function selectAtoms(structure: Structure, keep: (atom: number) => boolean): ShownAtoms {
+export function selectAtoms(structure: { atoms: { count: number } }, keep: (atom: number) => boolean): ShownAtoms {
   const { count } = structure.atoms
   const mask = new Uint8Array(count)
   let kept = 0
@@ -568,12 +654,12 @@ export function selectAtoms(structure: Structure, keep: (atom: number) => boolea
 }
 
 // Each structure's atoms at the defaults, kept beside its tables, which are never changed
-const defaultSets = new WeakMap<Structure, Uint32Array>()
+const defaultSets = new WeakMap<AtomPlaces, Uint32Array>()
 
 // The rows of the atoms of the structure's first model, each residue in its first conformation: the ones Models and
 // Alternates show at their defaults, which the framing and the entry's spreads come from, so that showing more models
 // or conformations moves neither
-export function defaultAtoms(structure: Structure): Uint32Array {
+export function defaultAtoms(structure: AtomPlaces): Uint32Array {
   let rows = defaultSets.get(structure)
   if (!rows) {
     const { flags } = structure.atoms

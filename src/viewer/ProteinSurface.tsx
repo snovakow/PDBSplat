@@ -53,6 +53,8 @@ export function ProteinSurface({ bounds, structureObject }: Props) {
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const burial = useStore((s) => s.options.burial)
+  // Each atom's burial, once the loader has worked it out
+  const buried = useStore((s) => s.burial?.values ?? null)
   const scale = useStore((s) => s.options.scale)
   const opacity = useStore((s) => s.options.opacity)
   const backShell = useStore((s) => isBackShell(s.options))
@@ -169,7 +171,7 @@ export function ProteinSurface({ bounds, structureObject }: Props) {
         next.back.renderOrder = backOrder
         next.backDepth.renderOrder = backDepthOrder
         const { options } = useStore.getState()
-        paint(next, options.colorBy, options.burial)
+        paint(next, options.colorBy, options.burial, buriedIn(structure))
         if (surface.current) discard(structureObject, surface.current)
         structureObject.add(next.backDepth, next.back, next.depth, next.mesh)
         // The mesh reaches as far from the structure's centre as its bounding sphere does
@@ -191,10 +193,12 @@ export function ProteinSurface({ bounds, structureObject }: Props) {
     }
   }, [structureObject, structure, shown, scale, resolution])
 
-  // A new colouring or Burial repaints the vertices from their atoms, without meshing again
+  // A new colouring or Burial, or the burial landing, repaints the vertices from their atoms, without meshing again
   useEffect(() => {
-    if (surface.current) paint(surface.current, colorBy, burial)
-  }, [colorBy, burial])
+    const current = surface.current
+    if (!current) return
+    paint(current, colorBy, burial, current.structure === useStore.getState().structure ? buried : null)
+  }, [colorBy, burial, buried])
 
   // Below full opacity, the near side's depth pass draws ahead of its colour and hides every layer but the nearest; with
   // the back shell on as well, the far side's two passes draw ahead of both, so that its nearest face shows under the
@@ -222,9 +226,14 @@ export function ProteinSurface({ bounds, structureObject }: Props) {
   return null
 }
 
-// Each vertex takes the colour of the atom adding the most density there
-function paint({ colors, structure, shown, owners }: Surface, colorBy: ColorBy, burial: number) {
-  const atomRgb = atomColors(structure, shown, colorBy, burial)
+// Each vertex takes the colour of the atom adding the most density there, darkened by its burial once that's landed
+function paint(
+  { colors, structure, shown, owners }: Surface,
+  colorBy: ColorBy,
+  burial: number,
+  buried: Float32Array | null,
+) {
+  const atomRgb = atomColors(structure, shown, colorBy, burial, buried)
   const rgb = colors.array
   for (let v = 0; v < owners.length; v++) {
     const a = owners[v] * 3
@@ -239,4 +248,10 @@ function discard(parent: Object3D, { mesh, depth, back, backDepth, unregister }:
   unregister()
   parent.remove(mesh, depth, back, backDepth)
   mesh.geometry.dispose()
+}
+
+// A structure's burial, while it's the one shown and its burial has landed
+function buriedIn(structure: Structure) {
+  const state = useStore.getState()
+  return state.structure === structure ? (state.burial?.values ?? null) : null
 }

@@ -1,13 +1,9 @@
 import assert from 'node:assert/strict'
-import { after, mock, test } from 'node:test'
+import { test } from 'node:test'
 import { burial } from '../src/pdb/burial.ts'
 import { StructureBuilder, type AtomRecord, type Structure } from '../src/pdb/structure.ts'
 
 // How deeply the atoms around an atom bury it, on clusters built here
-
-// The module reports its timing on the console, which the suite's output does without
-mock.method(console, 'info', () => undefined)
-after(() => mock.restoreAll())
 
 const base: AtomRecord = {
   x: 0,

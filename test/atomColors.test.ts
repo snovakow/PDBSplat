@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { after, mock, test } from 'node:test'
+import { test } from 'node:test'
 import { Color, SRGBColorSpace } from 'three'
+import { burial as burialOf } from '../src/pdb/burial.ts'
 import {
   selectAtoms,
   StructureBuilder,
@@ -12,10 +13,6 @@ import { atomColors, bFactorSpread, rainbowPositions } from '../src/viewer/atomC
 
 // The colourings, on small entries built here. Colours are compared as three's Colors in the working colour space, or
 // in sRGB where a rule is written in sRGB
-
-// The burial reports its timing on the console, which the suite's output does without
-mock.method(console, 'info', () => undefined)
-after(() => mock.restoreAll())
 
 const base: AtomRecord = {
   x: 0,
@@ -63,8 +60,9 @@ function assertColor(colors: Float32Array, i: number, expected: Color) {
 }
 
 // Every atom of a structure coloured, in order
+// The colours with Burial at a strength, darkened by the entry's burial
 const colorsOf = (structure: Structure, colorBy: Parameters<typeof atomColors>[2], burial = 0) =>
-  atomColors(structure, selectAtoms(structure, () => true), colorBy, burial)
+  atomColors(structure, selectAtoms(structure, () => true), colorBy, burial, burialOf(structure).values)
 
 const srgb = (r: number, g: number, b: number) => new Color().setRGB(r, g, b, SRGBColorSpace)
 const hsl = (hue: number) => new Color().setHSL(hue, saturation, lightness)
@@ -99,13 +97,13 @@ void test('the chains take their hues in the order the shown atoms come to them,
     { chain: 'A', model: 2 },
     { chain: 'B', labelChain: 'B', model: 2 },
   ])
-  const all = atomColors(structure, selectAtoms(structure, () => true), 'chain', 0)
+  const all = atomColors(structure, selectAtoms(structure, () => true), 'chain', 0, null)
   assertColor(all, 0, hsl(0))
   assertColor(all, 1, hsl(goldenAngle))
   assertColor(all, 3, hsl(goldenAngle))
   // With the waters hidden, chain A comes first
   const shown = selectAtoms(structure, (atom) => atom > 0)
-  const withoutWaters = atomColors(structure, shown, 'chain', 0)
+  const withoutWaters = atomColors(structure, shown, 'chain', 0, null)
   assertColor(withoutWaters, 0, hsl(0))
   assertColor(withoutWaters, 1, hsl(goldenAngle))
   assertColor(withoutWaters, 2, hsl(0))

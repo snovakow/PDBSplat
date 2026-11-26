@@ -53,6 +53,8 @@ export function ProteinField({ bounds, structureObject }: Props) {
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
   const burial = useStore((s) => s.options.burial)
+  // Each atom's burial, once the loader has worked it out
+  const buried = useStore((s) => s.burial?.values ?? null)
   const scale = useStore((s) => s.options.scale)
   const resolution = useStore((s) => s.options.resolution)
   const drawn = useRef<Drawn | null>(null)
@@ -118,7 +120,7 @@ export function ProteinField({ bounds, structureObject }: Props) {
         if (!target || useStore.getState().structure !== structure) return
         const { options } = useStore.getState()
         const table = createAtomTable(shown.count)
-        paintAtomTable(table, paintOf(shown, structure, options.colorBy, options.burial))
+        paintAtomTable(table, paintOf(shown, structure, options.colorBy, options.burial, buriedIn(structure)))
 
         // A ray picks the atom whose sphere it enters first, among those this field was sampled from, tested in the
         // structure's own space, where the spheres are. Each field brings its own pick, so that a pointer held still is
@@ -159,22 +161,31 @@ export function ProteinField({ bounds, structureObject }: Props) {
     }
   }, [structureObject, structure, shown, scale, resolution])
 
-  // A new colouring or Burial repaints the table the march reads, without sampling again
+  // A new colouring or Burial, or the burial landing, repaints the table the march reads, without sampling again
   useEffect(() => {
     const field = drawn.current?.field
-    if (field) paintAtomTable(field.table, paintOf(field.shown, field.structure, colorBy, burial))
-  }, [colorBy, burial])
+    if (!field) return
+    const own = field.structure === useStore.getState().structure ? buried : null
+    paintAtomTable(field.table, paintOf(field.shown, field.structure, colorBy, burial, own))
+  }, [colorBy, burial, buried])
 
   return null
 }
 
 // What the field's table is painted from: the colouring and Burial alone, with nothing faded, so every alpha is full
-function paintOf(shown: ShownAtoms, structure: Structure, colorBy: ColorBy, burial: number): TablePaint {
+function paintOf(
+  shown: ShownAtoms,
+  structure: Structure,
+  colorBy: ColorBy,
+  burial: number,
+  buried: Float32Array | null,
+): TablePaint {
   return {
     shown,
     structure,
     colorBy,
     burial,
+    buried,
     focus: 'all',
     picked: null,
     fade: 1,
@@ -193,4 +204,10 @@ function discard(current: Drawn) {
   field.table.texture.dispose()
   box.visible = false
   current.field = null
+}
+
+// A structure's burial, while it's the one shown and its burial has landed
+function buriedIn(structure: Structure) {
+  const state = useStore.getState()
+  return state.structure === structure ? (state.burial?.values ?? null) : null
 }

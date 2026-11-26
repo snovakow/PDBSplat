@@ -1,6 +1,5 @@
 import { Color, SRGBColorSpace } from 'three'
-import { burial } from '../pdb/burial.ts'
-import { elementColors } from '../pdb/elements.ts'
+import { elementHex } from '../pdb/elements.ts'
 import { percentile } from '../pdb/percentile.ts'
 import {
   chainOf,
@@ -41,21 +40,39 @@ const otherColor = new Color(0xffffff)
 const dnaResidues = new Set(['DA', 'DC', 'DG', 'DT', 'DU'])
 const rnaResidues = new Set(['A', 'C', 'G', 'U'])
 
+// Each element's colour as three reads it, made once: hex is sRGB, which Color converts to the renderer's linear
+// working space
+const elementColorCache = new Map<string, Color>()
+function elementColor(symbol: string) {
+  let color = elementColorCache.get(symbol)
+  if (!color) {
+    color = new Color(elementHex(symbol))
+    elementColorCache.set(symbol, color)
+  }
+  return color
+}
+
 // Writes an atom's colour, by its row, into a Color, and gives that Color back
 export type AtomColoring = (atom: number, color: Color) => Color
 
 // How each atom is coloured, by element, chain, B-factor, place along its chain or secondary structure, in three's
-// working colour space, darkened by Burial's share of how buried the atom is. The entry sets the B-factor spread, the
-// rainbow's ends and the burial, so that hiding atoms recolours none; the chains take their hues in the order the shown
-// atoms first come to them
-export function atomColoring(structure: Structure, shown: ShownAtoms, colorBy: ColorBy, burialStrength: number): AtomColoring {
+// working colour space, darkened by Burial's share of how buried the atom is, given by its row, or by none until the
+// burial is worked out. The entry sets the B-factor spread, the rainbow's ends and the burial, so that hiding atoms
+// recolours none; the chains take their hues in the order the shown atoms first come to them
+export function atomColoring(
+  structure: Structure,
+  shown: ShownAtoms,
+  colorBy: ColorBy,
+  burialStrength: number,
+  burial: Float32Array | null,
+): AtomColoring {
   const { atoms } = structure
   const { flags } = atoms
-  const elements = elementColors(structure.elements)
+  const elements = structure.elements.map(elementColor)
   const chains = colorBy === 'chain' ? chainColors(structure, shown) : null
   const spread = colorBy === 'bfactor' ? bFactorSpread(structure) : null
   const positions = colorBy === 'rainbow' ? rainbowPositions(structure) : null
-  const buried = burialStrength > 0 ? burial(structure).values : null
+  const buried = burialStrength > 0 ? burial : null
   return (atom, color) => {
     const polymer = (flags[atom] & polymerFlag) !== 0
     if (chains) color.copy(chains[chainOf(structure, atom)])
@@ -74,8 +91,14 @@ export function atomColoring(structure: Structure, shown: ShownAtoms, colorBy: C
 }
 
 // Each shown atom's colour under a colouring, as r, g, b per atom in the order they're shown
-export function atomColors(structure: Structure, shown: ShownAtoms, colorBy: ColorBy, burialStrength: number) {
-  const colorOf = atomColoring(structure, shown, colorBy, burialStrength)
+export function atomColors(
+  structure: Structure,
+  shown: ShownAtoms,
+  colorBy: ColorBy,
+  burialStrength: number,
+  burial: Float32Array | null,
+) {
+  const colorOf = atomColoring(structure, shown, colorBy, burialStrength, burial)
   const colors = new Float32Array(shown.count * 3)
   const color = new Color()
   for (let i = 0; i < shown.count; i++) {

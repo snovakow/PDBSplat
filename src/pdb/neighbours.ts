@@ -6,8 +6,11 @@ export interface NeighbourGrid {
 }
 
 // The most cells a grid holds, so that a sparse entry spread across a large box can't take a huge array. Beyond it the
-// cells widen, which keeps the search to the 27 cells around a point and only adds points to test
-const maxCells = 1 << 22
+// cells widen, which keeps the search to the 27 cells around a point and only adds points to test: twice as wide, eight
+// times as many. The bacteriophage 36ZA's 1,300 × 1,300 × 3,600 Å takes 6.4 million cells of burial's 10 Å, a 26 MB
+// array; at twice the width its burial took 19 minutes in the loader's worker on a 2014 Mac mini while the page drew,
+// and at 10 Å under 4
+const maxCells = 1 << 23
 
 // A grid over points given as x, y, z triples, each known by its index among them: those whose indices are listed, or
 // every one where no list is given. Cells are at least as wide as the radius, so every point within it of a place lies

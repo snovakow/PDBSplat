@@ -5,8 +5,9 @@ import { NodeMaterial } from 'three/webgpu'
 import { useShallow } from 'zustand/react/shallow'
 import { vdwRadii } from '../pdb/elements.ts'
 import type { Detail } from '../options.ts'
-import type { ShownAtoms, Structure } from '../pdb/structure.ts'
-import { entryHolds, shownAtoms, shownModel, useStore, type PickTest } from '../store.ts'
+import type { MergedLevels } from '../pdb/merge.ts'
+import { sameChoice, type ShownAtoms, type Structure } from '../pdb/structure.ts'
+import { entryHolds, shownAtoms, shownChoice, shownModel, useStore, type PickTest } from '../store.ts'
 import { isPickable, paintAtoms, paintMerged, type TablePaint } from './atomTable.ts'
 import type { Bounds } from './bounds.ts'
 import { drawsLevel, ellipsoidVertex, readPieceTable } from './ellipsoid.ts'
@@ -22,10 +23,10 @@ import {
 import { writeAtomShape, type AtomShape } from './ellipsoids.ts'
 import { pickedKey } from './focus.ts'
 import {
+  blobCovariances,
   levelDrawn,
   levelGroups,
   levels,
-  mergeGaussians,
   pixelsPerUnit,
   typicalDiameter,
   type Grouping,
@@ -78,6 +79,14 @@ function poolSize(structure: Structure, level: Level) {
   return Math.max(1, Math.min(poolCapacity[level], entryCount(structure, level)))
 }
 
+// Which levels' instances, as the shown atoms and the blobs last merged count them, fit their pools: the atoms shown,
+// the residues' blobs, and the chains, which always do. A level that doesn't fit isn't drawn, so no pool is made for
+// it. Each is 1 or 0, in the levels' order, as one key that changes only as a level comes to fit or stops
+function fittingLevels(shownCount: number, merged: MergedLevels | null, structure: Structure) {
+  const residues = merged?.residues.count ?? structure.residues.count
+  return [shownCount <= poolCapacity.atoms, residues <= poolCapacity.residues, true].map(Number).join('')
+}
+
 // The levels Detail builds for an entry: every level under auto, and otherwise the one it asks for, followed by the
 // coarser ones as far as the first whose pool holds all of the entry's, so that one level always fits
 function builtLevels(detail: Detail, structure: Structure): readonly Level[] {
@@ -88,6 +97,11 @@ function builtLevels(detail: Detail, structure: Structure): readonly Level[] {
     if (entryCount(structure, levels[index]) <= poolCapacity[levels[index]]) break
   }
   return built
+}
+
+// Whether Detail builds a merged level for an entry, whose blobs the loader merges
+function buildsMerged(detail: Detail, structure: Structure) {
+  return builtLevels(detail, structure).some((level) => level !== 'atoms')
 }
 
 interface Props {
@@ -116,7 +130,8 @@ interface LevelContent {
 // What the shown atoms are drawn as while they and their shapes stand: the shapes' options and the elements' radii,
 // the shown atoms' spans, which the pick walks at every level, the levels Detail builds, each piece's sphere, each
 // level's typical drawn diameter, which auto switches by, the atoms' paint and the weights the blobs mix it by, and
-// what it was last painted from, and which levels are offered, as their instances fit their pools
+// what it was last painted from, which levels are offered, as their instances fit their pools, and what takes its
+// pick away
 interface Content {
   structure: Structure
   shown: ShownAtoms
@@ -131,6 +146,13 @@ interface Content {
   weights: Float32Array
   painted: TablePaint | null
   offered: boolean[]
+  unregister: () => void
+}
+
+// Puts other content in place of what's drawn, or none, and takes the old one's pick away
+function replaceContent(content: { current: Content | null }, next: Content | null) {
+  content.current?.unregister()
+  content.current = next
 }
 
 // What the frames keep between them: the level drawn, or -1 before one is, a count of the frames that tested the
@@ -182,9 +204,9 @@ function repaintPiece(pool: Pool, { spans, paint }: LevelContent, piece: number)
 }
 
 // Paints the atoms from the inputs, unless they were painted from them already, and each merged level from the atoms,
-// and repaints in place the pieces the pools hold
+// and repaints in place the pieces the pools hold. Inputs of other shown atoms wait for the content that draws them
 function paintFrom(content: Content, stage: Stage, inputs: TablePaint) {
-  if (content.painted === inputs) return
+  if (content.painted === inputs || inputs.shown !== content.shown) return
   paintAtoms(content.atomPaint, inputs)
   content.levels.forEach((owned, level) => {
     if (!owned) return
@@ -252,9 +274,11 @@ function cull(entry: Stage, current: Content, level: number, state: Frames) {
 // chain, each the moment match of its atoms', as Detail asks, all placed by the structure's object. Each level draws
 // from a pool of its own, which holds the chains in view, a piece each, and a chain coming into view is written into
 // it as it does. A new colour or alpha repaints in place, a new shape or a new choice of atoms empties the pools to be
-// filled again, and a new layer of the spheres remakes their meshes on the same pools. Nothing is ever sorted: the
-// spheres are told apart by their surfaces' depths, and the soft splats are summed or glow, in an order that doesn't
-// matter
+// filled again, and a new layer of the spheres remakes their meshes on the same pools. The loader merges the blobs'
+// places, and a new choice of atoms is drawn once it has merged them again, what's drawn standing until then; each
+// blob's own spread is added here from its atoms' shapes, so that a new shape needs no merge. Nothing is ever sorted:
+// the spheres are told apart by their surfaces' depths, and the soft splats are summed or glow, in an order that
+// doesn't matter
 export function ProteinSplats({ bounds, structureObject }: Props) {
   const scale = useStore((s) => s.options.scale)
   const thermal = useStore((s) => s.options.thermal)
@@ -274,6 +298,7 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
         structure: s.structure,
         colorBy: s.options.colorBy,
         burial: s.options.burial,
+        buried: s.burial?.values ?? null,
         focus: s.options.focus,
         picked: pickedKey(s.structure, s.options.focus, s.picked),
         fade: s.options.fade,
@@ -285,6 +310,10 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
     ),
   )
   const { shown, structure } = paint
+  // The shown atoms' choice, and the blobs the loader last merged, with the choice they were merged for
+  const choice = useStore(useShallow(shownChoice))
+  const merged = useStore((s) => s.merged)
+  const fitting = fittingLevels(shown.count, merged, structure)
   const stage = useRef<Stage | null>(null)
   const content = useRef<Content | null>(null)
   // The meshes of each level
@@ -310,17 +339,31 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
     readPieceTable(entry.table)
     stage.current = entry
     return () => {
+      replaceContent(content, null)
       for (const pool of entry.pools) pool?.dispose()
       entry.table.dispose()
       stage.current = null
     }
   }, [structure])
 
+  // The blobs merged again by the loader for a new choice of atoms, where Detail builds a merged level
+  const needsMerge = buildsMerged(detail, structure) && shown.count > 0 && !(merged && sameChoice(merged.choice, choice))
+  useEffect(() => {
+    if (needsMerge) useStore.getState().requestMerge(choice)
+  }, [needsMerge, choice])
+
   // What the shown atoms are drawn as: each atom's ellipsoid, the blobs of the merged levels Detail builds, each
-  // piece's spans and sphere, and the pick. The pools take it as the frames fill them
+  // piece's spans and sphere, and the pick. The pools take it as the frames fill them. Where the merged levels' blobs
+  // are of another choice of atoms, what's drawn stands until the loader's merge for this one lands
   useEffect(() => {
     const entry = stage.current
-    if (!entry || shown.count === 0) return undefined
+    if (!entry) return
+    if (shown.count === 0) {
+      replaceContent(content, null)
+      return
+    }
+    const places: MergedLevels | null = merged && sameChoice(merged.choice, choice) ? merged : null
+    if (!places && buildsMerged(detail, structure)) return
 
     const shape: AtomShape = { scale, thermal, ellipsoids }
     const radii = vdwRadii(structure.elements)
@@ -353,11 +396,15 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
       let levelCovariances: Float32Array = covariances
       if (level === 'atoms') {
         owned[index] = { spans: atoms, blobs: null, paint: atomPaint, offered: false }
-      } else {
+      } else if (places) {
         const grouping = levelGroups(structure, shown, level)
-        const merged = mergeGaussians(centers, covariances, weights, grouping)
-        levelCenters = merged.centers
-        levelCovariances = merged.covariances
+        const placed = places[level]
+        if (placed.count !== grouping.count) {
+          console.warn(`PDBSplat: the loader merged ${placed.count} ${level} where ${grouping.count} are shown`)
+          return
+        }
+        levelCenters = placed.centers
+        levelCovariances = blobCovariances(placed.scatters, covariances, weights, grouping)
         const spans = groupSpans(atoms, grouping.groups)
         const blobs = { centers: levelCenters, covariances: levelCovariances, grouping }
         owned[index] = { spans, blobs, paint: new Uint8ClampedArray(grouping.count * paintSize), offered: false }
@@ -370,31 +417,6 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
     }
 
     const spheres = pieceSpheres(drawn)
-    const current: Content = {
-      structure,
-      shown,
-      detail,
-      shape,
-      radii,
-      atoms,
-      levels: owned,
-      spheres,
-      diameters,
-      atomPaint,
-      weights,
-      painted: null,
-      offered: owned.map((level) => level?.offered === true),
-    }
-    paintNow(current, entry)
-    setDrawnReach(reach)
-    content.current = current
-    frames.current.stale = true
-
-    // A ray picks the atom whose ellipsoid it meets first, whichever level is drawn, so the label names the atom
-    // under the pointer at every level, and an atom of the blob under it. It passes through an atom faded far out of
-    // focus, and through whatever the cut has taken. The ray is tested in the structure's own space, where the atoms'
-    // ellipsoids are, and the cut is as far along it there as in the scene. Only the pieces whose spheres it passes
-    // through are tested, nearest first, and each atom's ellipsoid is worked out as it's tested
     const walk = new PieceWalk(pieceCount(structure))
     const found: EllipsoidHit = { index: -1, distance: Infinity }
     const local = new Ray()
@@ -402,6 +424,12 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
     const inverse = new Float32Array(covarianceSize)
     // How far along the ray the cut lies, for the pick under way
     const along = { cut: 0 }
+
+    // A ray picks the atom whose ellipsoid it meets first, whichever level is drawn, so the label names the atom
+    // under the pointer at every level, and an atom of the blob under it. It passes through an atom faded far out of
+    // focus, and through whatever the cut has taken. The ray is tested in the structure's own space, where the atoms'
+    // ellipsoids are, and the cut is as far along it there as in the scene. Only the pieces whose spheres it passes
+    // through are tested, nearest first, and each atom's ellipsoid is worked out as it's tested
     const testPiece = (piece: number) => {
       for (let s = atoms.first[piece]; s < atoms.first[piece + 1]; s++) {
         for (let i = atoms.start[s]; i < atoms.end[s]; i++) {
@@ -423,18 +451,36 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
       hit.atom = shown.rows[found.index]
       hit.distance = found.distance
     }
-    const unregister = useStore.getState().registerPick(pick)
 
-    return () => {
-      unregister()
-      content.current = null
+    const current: Content = {
+      structure,
+      shown,
+      detail,
+      shape,
+      radii,
+      atoms,
+      levels: owned,
+      spheres,
+      diameters,
+      atomPaint,
+      weights,
+      painted: null,
+      offered: owned.map((level) => level?.offered === true),
+      unregister: useStore.getState().registerPick(pick),
     }
-  }, [structureObject, structure, shown, scale, thermal, ellipsoids, detail])
+    paintNow(current, entry)
+    setDrawnReach(reach)
+    replaceContent(content, current)
+    frames.current.stale = true
+  }, [structureObject, structure, shown, choice, merged, scale, thermal, ellipsoids, detail])
 
-  // The meshes on the pools of the levels Detail builds: one for each layer while the splats are layered, and
-  // otherwise one of soft splats that's summed or glows. Every mesh of a level draws the same instances, and none is
-  // culled by the quad's own bounds, which say nothing of where its instances are. They start hidden, and the frames
-  // show the level drawn
+  // What's drawn goes with the component
+  useEffect(() => () => replaceContent(content, null), [])
+
+  // The meshes on the pools of the levels Detail builds whose instances fit: one for each layer while the splats are
+  // layered, and otherwise one of soft splats that's summed or glows. Every mesh of a level draws the same instances,
+  // and none is culled by the quad's own bounds, which say nothing of where its instances are. They start hidden, and
+  // the frames show the level drawn
   useEffect(() => {
     const entry = stage.current
     if (!entry) return undefined
@@ -442,7 +488,7 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
     const built = builtLevels(detail, structure)
     const made = levels.map((level, index) => {
       const levelMeshes: Mesh<Pool['geometry'], NodeMaterial>[] = []
-      if (!built.includes(level)) return levelMeshes
+      if (!built.includes(level) || fitting[index] !== '1') return levelMeshes
       const pool = (entry.pools[index] ??= createPool(poolSize(structure, level), pieceCount(structure)))
       const add = () => {
         const material = new NodeMaterial()
@@ -511,7 +557,7 @@ export function ProteinSplats({ bounds, structureObject }: Props) {
       }
       meshes.current = []
     }
-  }, [structureObject, structure, detail, composite, solids, ghosts, backShell])
+  }, [structureObject, structure, detail, composite, solids, ghosts, backShell, fitting])
 
   // A new colouring, Burial, Focus, Fade or pick repaints the ellipsoids, in place
   useEffect(() => {

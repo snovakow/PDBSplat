@@ -26,14 +26,16 @@ export interface AtomTable {
   count: number
 }
 
-// What the atoms are painted from: the shown atoms and the structure they're from, Colour by and Burial, Focus with the
-// picked focus's key and Fade, the model shown, or null for every model at once, with how many the entry has,
-// Alternates, and whether what's painted is drawn in layers
+// What the atoms are painted from: the shown atoms and the structure they're from, Colour by and Burial, with each
+// atom's burial by its row, or null until it's worked out, Focus with the picked focus's key and Fade, the model
+// shown, or null for every model at once, with how many the entry has, Alternates, and whether what's painted is drawn
+// in layers
 export interface TablePaint {
   shown: ShownAtoms
   structure: Structure
   colorBy: ColorBy
   burial: number
+  buried: Float32Array | null
   focus: Focus
   picked: number | null
   fade: number
@@ -74,8 +76,8 @@ const color = new Color()
 // drawn. Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn
 // whole. Opacity acts through the shading's uniform, so it isn't here
 export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint) {
-  const { shown, structure, colorBy, burial, focus, picked, fade, model, modelCount, conformations, layered } = paint
-  const colorOf = atomColoring(structure, shown, colorBy, burial)
+  const { shown, structure, colorBy, burial, buried, focus, picked, fade, model, modelCount, conformations, layered } = paint
+  const colorOf = atomColoring(structure, shown, colorBy, burial, buried)
   const inFocus = focusTest(structure, focus, picked)
   const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
   const { altLoc, occupancy } = structure.atoms

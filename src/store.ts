@@ -2,15 +2,17 @@ import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
-import { fetchEntry, isAbort } from './pdb/fetchEntry.ts'
+import type { Burial } from './pdb/burial.ts'
+import type { LoadProgress } from './pdb/entryLoad.ts'
+import { fetchEntry, isAbort, mergeEntry, type Entry } from './pdb/fetchEntry.ts'
+import type { MergedLevels } from './pdb/merge.ts'
 import {
   emptyStructure,
-  firstConformationFlag,
-  hydrogenFlag,
   modelOf,
   selectAtoms,
-  waterFlag,
+  shownBy,
   type ShownAtoms,
+  type ShownChoice,
   type Structure,
 } from './pdb/structure.ts'
 import { hasLigands } from './viewer/focus.ts'
@@ -54,19 +56,20 @@ export function isShown(
   options: Pick<ViewOptions, 'hydrogens' | 'waters' | 'conformations'>,
   model: number | null,
 ) {
-  const flags = structure.atoms.flags[atom]
-  return (
-    (options.hydrogens || (flags & hydrogenFlag) === 0) &&
-    (options.waters || (flags & waterFlag) === 0) &&
-    (options.conformations === 'all' || (flags & firstConformationFlag) !== 0) &&
-    (model === null || modelOf(structure, atom) === model)
-  )
+  const { hydrogens, waters, conformations } = options
+  return shownBy(structure.atoms.flags[atom], modelOf(structure, atom), { hydrogens, waters, conformations, model })
 }
 
 // The model Models shows: the first, or the one playing, or null for every model at once
 export function shownModel(state: { options: ViewOptions; models: readonly number[]; model: number }): number | null {
   if (state.options.models === 'all') return null
   return state.options.models === 'play' ? state.model : (state.models[0] ?? state.model)
+}
+
+// The atoms Hydrogens, Waters, Alternates and the model shown choose
+export function shownChoice(state: Pick<State, 'options' | 'models' | 'model'>): ShownChoice {
+  const { hydrogens, waters, conformations } = state.options
+  return { hydrogens, waters, conformations, model: shownModel(state) }
 }
 
 // What the shown atoms were last selected from, and the selection, so that the same one comes back while they stand
@@ -86,8 +89,8 @@ let lastShown: LastShown | null = null
 // under the pointer
 export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models' | 'model'>): ShownAtoms {
   const { structure } = state
-  const { hydrogens, waters, conformations } = state.options
-  const model = shownModel(state)
+  const choice = shownChoice(state)
+  const { hydrogens, waters, conformations, model } = choice
   const last = lastShown
   if (
     last &&
@@ -99,7 +102,8 @@ export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models'
   ) {
     return last.shown
   }
-  const shown = selectAtoms(structure, (atom) => isShown(structure, atom, state.options, model))
+  const { flags } = structure.atoms
+  const shown = selectAtoms(structure, (atom) => shownBy(flags[atom], modelOf(structure, atom), choice))
   lastShown = { structure, hydrogens, waters, conformations, model, shown }
   return shown
 }
@@ -144,10 +148,16 @@ interface State {
   model: number
   // Moves playback on to the next model, and from the last back to the first
   nextModel: () => void
-  // The latest load, and its message if it failed
+  // The latest load, and its message if it failed, and how far it has come while it's under way
   status: Status
   error: string | null
+  progress: LoadProgress | null
   load: (id: string) => Promise<void>
+  // The shown entry's residues and chains merged into blobs, under the choice of atoms they were merged for, which
+  // the loader merges again on request; and its burial, null until the loader has worked it out
+  merged: MergedLevels | null
+  requestMerge: (choice: ShownChoice) => void
+  burial: Burial | null
   options: ViewOptions
   setOptions: (changes: Partial<ViewOptions>) => void
   // The atom under the pointer and the one last clicked, both by their rows in the shown entry, which a new entry clears
@@ -161,7 +171,10 @@ interface State {
   registerPick: (pick: PickTest) => () => void
 }
 
-export const useStore = create<State>()((set) => ({
+// Each load's number, so that a superseded load's progress, which may still be on its way, changes nothing
+let loads = 0
+
+export const useStore = create<State>()((set, get) => ({
   id: '',
   title: '',
   structure: emptyStructure,
@@ -169,6 +182,9 @@ export const useStore = create<State>()((set) => ({
   model: 0,
   status: 'idle',
   error: null,
+  progress: null,
+  merged: null,
+  burial: null,
   options: openingOptions(reducedMotion),
   hovered: null,
   picked: null,
@@ -192,9 +208,23 @@ export const useStore = create<State>()((set) => ({
     return () => set((state) => ({ picks: state.picks.filter((registered) => registered !== pick) }))
   },
   load: async (id) => {
-    set({ status: 'loading', error: null })
+    const load = ++loads
+    set({ status: 'loading', error: null, progress: null })
+    const { hydrogens, waters, conformations, models: shownModels } = get().options
     try {
-      const entry = await fetchEntry(id)
+      const { entry, merged, burial } = await fetchEntry(
+        id,
+        { hydrogens, waters, conformations, allModels: shownModels === 'all' },
+        {
+          progress: (progress) => {
+            if (load === loads) set({ progress })
+          },
+          // The burial lands on the entry it was worked out for, while that's the one shown
+          burial: (of: Entry, landed: Burial) => {
+            if (get().structure === of) set({ burial: landed })
+          },
+        },
+      )
       const { models, atoms, tallies } = entry
       set({
         id: entry.id,
@@ -203,6 +233,9 @@ export const useStore = create<State>()((set) => ({
         models,
         model: models[0] ?? 0,
         status: 'ready',
+        progress: null,
+        merged,
+        burial,
         hovered: null,
         picked: null,
       })
@@ -219,8 +252,20 @@ export const useStore = create<State>()((set) => ({
       // A newer load aborted this one, and owns the status now
       if (isAbort(error)) return
       const message = error instanceof Error ? error.message : String(error)
-      set({ status: 'failed', error: message })
+      set({ status: 'failed', error: message, progress: null })
       console.warn(`PDBSplat: ${message}`)
     }
+  },
+  // The levels merged again for the entry shown, once the loader has them, unless another entry is shown by then
+  requestMerge: (choice) => {
+    const { structure } = get()
+    mergeEntry(structure, choice).then(
+      (merged) => {
+        if (get().structure === structure) set({ merged })
+      },
+      (error: unknown) => {
+        if (!isAbort(error)) console.warn(`PDBSplat: ${error instanceof Error ? error.message : String(error)}`)
+      },
+    )
   },
 }))

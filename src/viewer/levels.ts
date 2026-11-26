@@ -104,6 +104,30 @@ export function mergeGaussians(
   return merged
 }
 
+// The covariances of a merged level's blobs, each the scatter of its members' centres about its own, as the loader
+// merged them, plus the weighted mean of its members' own covariances, which follow Size, Thermal and Ellipsoids. It
+// is what mergeGaussians gives for the same members, with the part that their places alone set made elsewhere
+export function blobCovariances(
+  scatters: Float32Array,
+  covariances: Float32Array,
+  weights: ArrayLike<number>,
+  { groups, count }: Grouping,
+): Float32Array {
+  const sums = new Float64Array(count * 6)
+  const totals = new Float64Array(count)
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i]
+    const weight = weights[i]
+    totals[group] += weight
+    for (let k = 0; k < 6; k++) sums[group * 6 + k] += weight * covariances[i * 6 + k]
+  }
+  const blobs = new Float32Array(count * 6)
+  for (let group = 0; group < count; group++) {
+    for (let k = 0; k < 6; k++) blobs[group * 6 + k] = scatters[group * 6 + k] + sums[group * 6 + k] / totals[group]
+  }
+  return blobs
+}
+
 // The bits of a double, high word and low word, as the histograms below read them. Two doubles at or above 0 are in
 // the same order as their bits read as whole numbers, high word first
 const double = new Float64Array(1)

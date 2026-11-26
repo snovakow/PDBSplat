@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   chainOf,
+  copyPlaces,
   emptyStructure,
   firstConformationFlag,
   hydrogenFlag,
@@ -9,7 +10,9 @@ import {
   polymerFlag,
   residueKey,
   residueNameOf,
+  sameChoice,
   selectAtoms,
+  shownBy,
   StructureBuilder,
   tensorOf,
   waterFlag,
@@ -231,4 +234,48 @@ void test('more distinct elements than a byte holds is an error', () => {
   const builder = new StructureBuilder()
   for (let i = 0; i < 256; i++) builder.add({ ...base, element: `E${i}` })
   assert.throws(() => builder.add({ ...base, element: 'E256' }), /more than 256 distinct elements/)
+})
+
+void test('a builder told its size as it reads grows once to it, and says what it holds so far', () => {
+  const builder = new StructureBuilder(2)
+  builder.add(base)
+  builder.add({ ...base, chain: 'B', labelChain: 'B' })
+  assert.equal(builder.atomCount, 2)
+  assert.equal(builder.residueCount, 2)
+  assert.equal(builder.chainRow, 1)
+  builder.reserve(1000)
+  for (let i = 0; i < 998; i++) builder.add({ ...base, residueNumber: i + 2, x: i })
+  const structure = builder.finish()
+  assert.equal(structure.atoms.count, 1000)
+  assert.equal(structure.atoms.positions[999 * 3], 997)
+  // Finished, it takes no more room, so its structure's columns stay as they are
+  builder.reserve(5000)
+  assert.equal(structure.atoms.positions.length, 3000)
+  assert.equal(new StructureBuilder().chainRow, -1)
+})
+
+void test('the columns that place the atoms are copied apart from the structure, which can then be handed on', () => {
+  const structure = structureOf([{}, { model: 2, x: 3 }, { element: 'N', residueNumber: 2 }])
+  const places = copyPlaces(structure)
+  assert.deepEqual(places.atoms.positions, structure.atoms.positions)
+  assert.notEqual(places.atoms.positions.buffer, structure.atoms.positions.buffer)
+  assert.deepEqual(places.models, [1, 2])
+  assert.deepEqual(places.elements, structure.elements)
+  for (let atom = 0; atom < 3; atom++) {
+    assert.equal(chainOf(places, atom), chainOf(structure, atom))
+    assert.equal(modelOf(places, atom), modelOf(structure, atom))
+  }
+})
+
+void test('a choice shows atoms by their flags and model, and two choices are the same where all four agree', () => {
+  const choice = { hydrogens: false, waters: false, conformations: 'first', model: 1 } as const
+  assert.equal(shownBy(firstConformationFlag, 1, choice), true)
+  assert.equal(shownBy(firstConformationFlag, 2, choice), false)
+  assert.equal(shownBy(firstConformationFlag, 2, { ...choice, model: null }), true)
+  assert.equal(shownBy(firstConformationFlag | hydrogenFlag, 1, choice), false)
+  assert.equal(shownBy(firstConformationFlag | waterFlag, 1, { ...choice, waters: true }), true)
+  assert.equal(shownBy(0, 1, choice), false)
+  assert.equal(shownBy(0, 1, { ...choice, conformations: 'all' }), true)
+  assert.equal(sameChoice(choice, { ...choice }), true)
+  assert.equal(sameChoice(choice, { ...choice, model: null }), false)
 })

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { after, mock, test } from 'node:test'
+import { test } from 'node:test'
 import { Color } from 'three'
+import { burial as burialOf } from '../src/pdb/burial.ts'
 import {
   altLocOf,
   elementOf,
@@ -26,10 +27,6 @@ import {
 
 // The atoms' paint: the index bytes the field's table is read by, the table's shape, each painted atom's colour and
 // alpha, and the pick's threshold
-
-// The burial reports its timing on the console, which the suite's output does without
-mock.method(console, 'info', () => undefined)
-after(() => mock.restoreAll())
 
 const base: AtomRecord = {
   x: 0,
@@ -80,6 +77,7 @@ const secondResidue = 1
 const defaults: Omit<TablePaint, 'shown' | 'structure'> = {
   colorBy: 'element',
   burial: 0,
+  buried: null,
   focus: 'all',
   picked: null,
   fade: 0.15,
@@ -149,8 +147,9 @@ void test('a painted texel is its atom\'s colour, and a paint marks the texture 
   const entry = entryOf()
   for (const colorBy of ['element', 'chain', 'bfactor', 'rainbow', 'structure'] as const) {
     for (const burial of [0, 0.5]) {
-      const { table, shown } = painted(entry, { colorBy, burial })
-      const rgb = atomColors(entry, shown, colorBy, burial)
+      const buried = burialOf(entry).values
+      const { table, shown } = painted(entry, { colorBy, burial, buried })
+      const rgb = atomColors(entry, shown, colorBy, burial, buried)
       for (let i = 0; i < shown.count; i++) {
         assert.deepEqual(texel(table.bytes, i), [byte(rgb[i * 3]), byte(rgb[i * 3 + 1]), byte(rgb[i * 3 + 2]), 255])
       }
