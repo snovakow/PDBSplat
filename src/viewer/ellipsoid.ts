@@ -1,3 +1,4 @@
+import { Vector4, type Object3D } from 'three'
 import {
   attribute,
   cameraNear,
@@ -9,6 +10,8 @@ import {
   float,
   Fn,
   If,
+  int,
+  ivec2,
   length,
   max,
   mix,
@@ -19,6 +22,8 @@ import {
   screenSize,
   select,
   sqrt,
+  textureLoad,
+  uniform,
   varyingProperty,
   vec2,
   vec3,
@@ -26,6 +31,7 @@ import {
 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 import { ellipsoidAttributes, surfaceDeviations } from './ellipsoidGeometry.ts'
+import { PieceTable, tableSide, texelsPerLayer } from './pieces.ts'
 
 // The one thing the splat styles draw: an ellipsoid, given by its centre and its covariance. An atom is a round one, a
 // thermal ellipsoid or a merged blob a stretched one, and each is a Gaussian as much as a solid: the soft style draws
@@ -34,7 +40,9 @@ import { ellipsoidAttributes, surfaceDeviations } from './ellipsoidGeometry.ts'
 // ellipsoid itself, so that the outline, the depth and the facing are the ellipsoid's own, and nothing is approximated
 // by a flat disc. The instances' centres and shapes are in the structure's own coordinates, and its object places them
 // in the scene: the vertex stage moves each centre by the object's matrix and turns each shape by its rotation, so
-// that a pixel is handed its ellipsoid in scene coordinates, wherever the object is placed
+// that a pixel is handed its ellipsoid in scene coordinates, wherever the object is placed. Each instance belongs to a
+// piece, whose texel in the piece table says whether it's drawn at the level its mesh draws, and one that isn't is
+// collapsed out of sight
 
 // An ellipsoid's surface lies where its own measure of distance from its centre, squared, is this
 const surfaceDistanceSquared = surfaceDeviations * surfaceDeviations
@@ -50,11 +58,48 @@ const nearMargin = 1.01
 // The least length of the shape's gradient to divide by, where a ray passes outside the outline and meets no surface
 const leastGradient = 1e-12
 
-// The instances' attributes: the centre, the covariance in two halves, and the paint
+// The instances' attributes: the centre, the covariance in two halves, the paint and the piece
 const centre = attribute(ellipsoidAttributes.centre, 'vec3')
 const shapeA = attribute(ellipsoidAttributes.shapeA, 'vec3')
 const shapeB = attribute(ellipsoidAttributes.shapeB, 'vec3')
 const paint = attribute(ellipsoidAttributes.paint, 'vec4')
+const piece = attribute(ellipsoidAttributes.piece, 'uint')
+
+// The piece table the instances are read against, which the splats swap in for each entry: it starts as an empty one
+// with every piece hidden
+const pieceTable = textureLoad(new PieceTable(1).texture)
+
+// Draws from a piece table, for every mesh the vertex stage serves
+export function readPieceTable(table: PieceTable) {
+  pieceTable.value = table.texture
+}
+
+// Which channel of its piece's texel each mesh reads, as the one place set to 1: its level's. A mesh given none reads
+// the fourth, which no level takes and every piece holds hidden
+const levelChannels = new WeakMap<Object3D, Vector4>()
+const noLevel = new Vector4(0, 0, 0, 1)
+
+// Has a mesh draw its instances where their pieces are drawn at a level, by its place among the levels
+export function drawsLevel(mesh: Object3D, level: number) {
+  levelChannels.set(mesh, new Vector4(0, 0, 0, 0).setComponent(level, 1))
+}
+
+const levelChannel = uniform(new Vector4(0, 0, 0, 1)).onObjectUpdate(({ object }) =>
+  object ? (levelChannels.get(object) ?? noLevel) : noLevel,
+)
+
+// Whether the instance's piece is drawn at its mesh's level, from the piece's texel: the table's layers are square,
+// and a piece's index runs along a layer's rows and then from layer to layer
+function pieceShown() {
+  const side = int(tableSide)
+  const perLayer = int(texelsPerLayer)
+  const index = int(piece).toVar()
+  const layer = index.div(perLayer).toVar()
+  const within = index.sub(layer.mul(perLayer)).toVar()
+  const row = within.div(side).toVar()
+  const texel = textureLoad(pieceTable, ivec2(within.sub(row.mul(side)), row)).depth(layer)
+  return dot(texel, levelChannel).greaterThanEqual(0)
+}
 
 // What a pixel is given of its ellipsoid: the centre, the inverse of the widened covariance, laid out as the covariance
 // is, the paint, and how far the widening dims a Gaussian. All four corners of a rectangle carry the same values
@@ -153,8 +198,8 @@ export const ellipsoidVertex = Fn(() => {
   const drawn = max(depth, cameraNear.mul(nearMargin)).toVar()
   const across = mix(lowest, highest, positionGeometry.xy.mul(0.5).add(0.5)).mul(drawn)
   const clip = cameraProjectionMatrix.mul(vec4(across, drawn.negate(), 1)).toVar()
-  // Wholly nearer than the near plane, it's drawn nowhere
-  If(farthest.lessThan(cameraNear), () => {
+  // Wholly nearer than the near plane, or of a piece not drawn at its mesh's level, it's drawn nowhere
+  If(farthest.lessThan(cameraNear).or(pieceShown().not()), () => {
     clip.assign(vec4(2, 2, 2, 1))
   })
   return clip

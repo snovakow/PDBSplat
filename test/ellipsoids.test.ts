@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { vdwRadii } from '../src/pdb/elements.ts'
 import { StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
-import { writeEllipsoid } from '../src/viewer/ellipsoids.ts'
+import { writeRound } from '../src/viewer/ellipsoidGeometry.ts'
+import { writeAtomShape, writeEllipsoid } from '../src/viewer/ellipsoids.ts'
 
 // The thermal ellipsoids' covariances, from tensors with known eigenvalues built here
 
@@ -162,4 +164,27 @@ void test('Size scales the covariance by its square', () => {
     covariance({ bFactor: 20 }, 0.5),
     covariance({ bFactor: 20 }).map((value) => value / 4),
   )
+})
+
+void test("an atom's shape is its van der Waals sphere at Size, spread by Thermal, or under Ellipsoids its ellipsoid", () => {
+  const builder = new StructureBuilder()
+  builder.add({ ...base, element: 'N', bFactor: 30 })
+  builder.add({ ...base, element: 'C', bFactor: -4 })
+  const structure = builder.finish()
+  const radii = vdwRadii(structure.elements)
+  const shape = new Float32Array(6)
+  const expected = new Float32Array(6)
+  for (const atom of [0, 1]) {
+    const radius = radii[structure.atoms.element[atom]]
+    // Half the radius at Size is the deviation, and Thermal adds its share of the displacement's variance, which a
+    // negative B-factor doesn't take from
+    writeAtomShape(shape, 0, structure, atom, radii, { scale: 1.5, thermal: 0.6, ellipsoids: false })
+    const size = (radius * 1.5) / 2
+    writeRound(expected, 0, Math.sqrt(size * size + (0.6 * Math.max(structure.atoms.bFactor[atom], 0)) / bPerU))
+    assert.deepEqual([...shape], [...expected])
+    // Under Ellipsoids, the thermal ellipsoid at Size, whatever Thermal is
+    writeAtomShape(shape, 0, structure, atom, radii, { scale: 1.5, thermal: 0.6, ellipsoids: true })
+    writeEllipsoid(expected, 0, structure, atom, 1.5)
+    assert.deepEqual([...shape], [...expected])
+  }
 })

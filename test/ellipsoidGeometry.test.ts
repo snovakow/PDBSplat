@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { InterleavedBufferAttribute } from 'three'
 import {
-  createEllipsoids,
   covarianceSize,
+  createPool,
   ellipsoidsReach,
   paintSize,
+  shapeSize,
   surfaceDeviations,
   writeRound,
 } from '../src/viewer/ellipsoidGeometry.ts'
 
-// The ellipsoids' geometry: one quad, drawn once for each, with each one's centre, covariance and paint as the
-// instance's attributes
+// The ellipsoids' geometry: one quad, drawn once for each slot of a pool, with each one's centre, covariance, paint
+// and piece as the instance's attributes
 
 void test('a round covariance has its variance along each axis and nothing between them', () => {
   const target = new Float32Array(8)
@@ -71,47 +73,66 @@ void test('a tilted ellipsoid reaches no farther than the reach given, along any
   assert.ok(reach >= farthest)
 })
 
-void test('the geometry draws one quad for each ellipsoid, from its centre, covariance and paint', () => {
-  const centers = new Float32Array([1, 2, 3, -4, -5, -6])
-  const covariances = new Float32Array([1, 0.1, 0.2, 2, 0.3, 3, 4, 0.4, 0.5, 5, 0.6, 6])
-  const { geometry, paint } = createEllipsoids(centers, covariances)
-  assert.equal(geometry.instanceCount, 2)
+void test("a pool's geometry draws one quad for each slot, from its centre, covariance, paint and piece", () => {
+  const pool = createPool(2, 3)
+  const { geometry, shapes, pieces } = pool
+  assert.equal(shapeSize, 9)
   // The quad: four corners and two triangles
   assert.equal(geometry.getAttribute('position').count, 4)
   assert.equal(geometry.getIndex()?.count, 6)
+  const slot = pool.fill(2, 2, 1)
+  shapes.set([1, 2, 3, 1, 0.1, 0.2, 2, 0.3, 3, -4, -5, -6, 4, 0.4, 0.5, 5, 0.6, 6], slot * shapeSize)
   const centre = geometry.getAttribute('center')
   assert.equal(centre.count, 2)
   assert.deepEqual([centre.getX(1), centre.getY(1), centre.getZ(1)], [-4, -5, -6])
-  // The covariance's xx, xy and xz in one attribute, and its yy, yz and zz in the other, both read from the one array
+  // The covariance's xx, xy and xz in one attribute, and its yy, yz and zz in the other, both read from the slot's
+  // shape after its centre
   const first = geometry.getAttribute('covarianceA')
   const second = geometry.getAttribute('covarianceB')
-  assert.deepEqual([first.getX(0), first.getY(0), first.getZ(0)], [1, covariances[1], covariances[2]])
-  assert.deepEqual([second.getX(0), second.getY(0), second.getZ(0)], [2, covariances[4], 3])
+  assert.deepEqual([first.getX(0), first.getY(0), first.getZ(0)], [1, shapes[4], shapes[5]])
+  assert.deepEqual([second.getX(0), second.getY(0), second.getZ(0)], [2, shapes[7], 3])
   assert.deepEqual([first.getX(1), second.getX(1), second.getZ(1)], [4, 5, 6])
-  // Each is an attribute of the instances, so every corner of an ellipsoid's quad is given the same
-  for (const name of ['center', 'covarianceA', 'covarianceB', 'paint']) {
+  // The piece the slots were filled for
+  assert.deepEqual([...pieces], [2, 2])
+  assert.equal(geometry.getAttribute('piece').getX(1), 2)
+  // Each is an attribute of the instances, so every corner of an ellipsoid's quad is given the same, and each kind
+  // of value is one buffer
+  for (const name of ['center', 'covarianceA', 'covarianceB', 'paint', 'piece']) {
     const attribute = geometry.getAttribute(name)
-    const instanced =
-      'data' in attribute ? 'isInstancedInterleavedBuffer' in attribute.data : 'isInstancedBufferAttribute' in attribute
-    assert.equal(instanced, true, name)
+    assert.ok(attribute instanceof InterleavedBufferAttribute, name)
+    assert.equal('isInstancedInterleavedBuffer' in attribute.data, true, name)
   }
-  assert.equal(paint.length, 2 * paintSize)
+  const buffers = new Set(['center', 'covarianceA', 'covarianceB'].map((name) => {
+    const attribute = geometry.getAttribute(name)
+    return attribute instanceof InterleavedBufferAttribute ? attribute.data : null
+  }))
+  assert.equal(buffers.size, 1)
+  assert.equal(pool.paint.length, 2 * paintSize)
+  assert.equal(shapes.length, 2 * (3 + covarianceSize))
 })
 
 void test('the paint clamps and rounds what is written, and the attribute reads the same bytes', () => {
-  const { geometry, paint, repaint } = createEllipsoids(new Float32Array(6), new Float32Array(12))
+  const pool = createPool(2, 2)
+  const { geometry, paint } = pool
   const painted = geometry.getAttribute('paint')
   assert.equal(painted.itemSize, 4)
   assert.equal(painted.normalized, true)
   assert.deepEqual([...paint], [0, 0, 0, 0, 0, 0, 0, 0])
   paint.set([300, -5, 127.6, 255], 4)
-  assert.deepEqual([...painted.array].slice(4), [255, 0, 128, 255])
+  if (!(painted instanceof InterleavedBufferAttribute)) throw new Error('The paint is interleaved')
+  assert.deepEqual([...painted.data.array].slice(4), [255, 0, 128, 255])
   // As a share of full, as a shader reads it
   assert.equal(painted.getX(1), 1)
   assert.equal(painted.getW(1), 1)
-  // Rewritten paint is sent again only when asked
-  if (!('version' in painted)) throw new Error('The paint is an attribute of its own')
-  const version = painted.version
-  repaint()
-  assert.equal(painted.version, version + 1)
+  // Rewritten paint is sent again only for the pieces said to be repainted
+  pool.fill(1, 2, 1)
+  pool.send()
+  painted.data.clearUpdateRanges()
+  const version = painted.data.version
+  pool.send()
+  assert.equal(painted.data.version, version)
+  pool.repainted(1)
+  pool.send()
+  assert.equal(painted.data.version, version + 1)
+  assert.deepEqual(painted.data.updateRanges.map(({ start, count }) => [start, count]), [[0, 2 * paintSize]])
 })

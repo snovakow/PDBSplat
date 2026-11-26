@@ -4,10 +4,10 @@ import { selectAtoms, StructureBuilder, type AtomRecord } from '../src/pdb/struc
 import { writeRound } from '../src/viewer/ellipsoidGeometry.ts'
 import {
   groupBy,
+  levelDrawn,
   levelGroups,
   levelPixels,
   levels,
-  levelToDraw,
   mergeGaussians,
   pixelsPerUnit,
   typicalDiameter,
@@ -181,22 +181,57 @@ void test('the typical diameter of one round Gaussian is its drawn diameter, and
   assert.equal(typicalDiameter(new Float32Array(0), cutoff), 0)
 })
 
+// The median by a full sort, as the typical diameter was once taken
+function sortedMedian(covariances: Float32Array) {
+  const diameters = new Float64Array(covariances.length / 6)
+  for (let i = 0; i < diameters.length; i++) {
+    const trace = covariances[i * 6] + covariances[i * 6 + 3] + covariances[i * 6 + 5]
+    diameters[i] = 2 * cutoff * Math.sqrt(trace / 3)
+  }
+  diameters.sort()
+  const middle = diameters.length >> 1
+  return diameters.length % 2 === 1 ? diameters[middle] : (diameters[middle - 1] + diameters[middle]) / 2
+}
+
+void test('the typical diameter found by histograms is the sorted median exactly, however many share a size', () => {
+  let state = 5
+  const next = () => {
+    state = (state * 1103515245 + 12345) % 2147483648
+    return state / 2147483648
+  }
+  // Counts below, at and above the size at which the histograms start, with sizes all distinct, from a few kinds as
+  // the atoms of one element at Thermal 0 are, and spread over decades as blobs are
+  for (const count of [1, 2, 7, 1000, 65536, 65537, 200001, 200002]) {
+    const sigmas: ((i: number) => number)[] = [
+      () => 0.1 + next() * 3,
+      (i) => [0.85, 0.775, 0.76, 0.9, 0.6][i % 5],
+      () => Math.exp(next() * 8 - 2),
+    ]
+    for (const sigma of sigmas) {
+      const covariances = new Float32Array(count * 6)
+      for (let i = 0; i < count; i++) writeRound(covariances, i * 6, sigma(i))
+      assert.equal(typicalDiameter(covariances, cutoff), sortedMedian(covariances), `${count} Gaussians`)
+    }
+  }
+})
+
 void test('the switch rule picks the finest level still a few pixels across, or the coarsest where none is', () => {
   assert.equal(levelPixels, 4)
   assert.deepEqual(levels, ['atoms', 'residues', 'chains'])
-  // Diameters in ångströms, finest first, as a protein's might be
+  // Diameters in ångströms, finest first, as a protein's might be, with every level offered
   const diameters = [3.4, 8, 40]
+  const all = [true, true, true]
   // The atoms just reach the threshold, and just fall short of it
-  assert.equal(levelToDraw(diameters, levelPixels / 3.4), 0)
-  assert.equal(levelToDraw(diameters, levelPixels / 3.4 - 1e-9), 1)
-  assert.equal(levelToDraw(diameters, levelPixels / 8), 1)
-  assert.equal(levelToDraw(diameters, levelPixels / 8 - 1e-9), 2)
-  assert.equal(levelToDraw(diameters, levelPixels / 40), 2)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 3.4), 0)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 3.4 - 1e-9), 1)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 8), 1)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 8 - 1e-9), 2)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 40), 2)
   // Nothing reaches it, so the coarsest is drawn
-  assert.equal(levelToDraw(diameters, levelPixels / 40 - 1e-9), 2)
-  assert.equal(levelToDraw(diameters, 0), 2)
-  // One level alone is always drawn
-  assert.equal(levelToDraw([3.4], 0), 0)
+  assert.equal(levelDrawn('auto', all, diameters, levelPixels / 40 - 1e-9), 2)
+  assert.equal(levelDrawn('auto', all, diameters, 0), 2)
+  // With the camera at the structure's centre, the finest
+  assert.equal(levelDrawn('auto', all, diameters, Infinity), 0)
 })
 
 void test('the pixels per unit follow the viewport height, the field of view and the depth', () => {
@@ -208,4 +243,22 @@ void test('the pixels per unit follow the viewport height, the field of view and
   // Twice the depth halves it, and twice the height doubles it
   assert.ok(Math.abs(pixelsPerUnit(713, 50, 94) - expected / 2) <= 1e-12)
   assert.ok(Math.abs(pixelsPerUnit(1426, 50, 47) - expected * 2) <= 1e-12)
+})
+
+void test('the level drawn is the one the switch rule picks, among the levels whose instances fit their pools', () => {
+  const diameters = [3.4, 8, 40]
+  const all = [true, true, true]
+  // A fixed Detail draws its own level
+  assert.equal(levelDrawn('atoms', all, diameters, 0), 0)
+  assert.equal(levelDrawn('residues', all, diameters, 100), 1)
+  assert.equal(levelDrawn('chains', all, diameters, 100), 2)
+  // Atoms too many for their pool give way to residues, under auto and under a fixed Detail alike
+  const noAtoms = [false, true, true]
+  assert.equal(levelDrawn('auto', noAtoms, diameters, 100), 1)
+  assert.equal(levelDrawn('auto', noAtoms, diameters, Infinity), 1)
+  assert.equal(levelDrawn('auto', noAtoms, diameters, levelPixels / 40 - 1e-9), 2)
+  assert.equal(levelDrawn('atoms', noAtoms, diameters, 100), 1)
+  // And with neither fitting, the chains, whose pool holds every one
+  assert.equal(levelDrawn('auto', [false, false, true], diameters, 100), 2)
+  assert.equal(levelDrawn('atoms', [false, false, true], diameters, 100), 2)
 })

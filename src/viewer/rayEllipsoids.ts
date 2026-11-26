@@ -53,10 +53,50 @@ export function invertCovariances(covariances: Float32Array) {
   return inverses
 }
 
+// How far along a ray it enters an ellipsoid, given its centre and the inverse of its covariance at offsets: where it
+// first meets the surface, or the cut where the cut crosses the ellipsoid, or Infinity where it misses the ellipsoid or
+// the ellipsoid lies wholly nearer than the cut. The ray's direction has unit length
+export function ellipsoidEntry(
+  ray: Ray,
+  centers: ArrayLike<number>,
+  centerAt: number,
+  inverses: ArrayLike<number>,
+  at: number,
+  cut: number,
+) {
+  const { origin, direction } = ray
+  const xx = inverses[at]
+  const xy = inverses[at + 1]
+  const xz = inverses[at + 2]
+  const yy = inverses[at + 3]
+  const yz = inverses[at + 4]
+  const zz = inverses[at + 5]
+  const ox = origin.x - centers[centerAt]
+  const oy = origin.y - centers[centerAt + 1]
+  const oz = origin.z - centers[centerAt + 2]
+  // The inverse times the direction, how steeply the ellipsoid's measure climbs along the ray, and how far along the
+  // ray passes the centre nearest by that measure
+  const sx = xx * direction.x + xy * direction.y + xz * direction.z
+  const sy = xy * direction.x + yy * direction.y + yz * direction.z
+  const sz = xz * direction.x + yz * direction.y + zz * direction.z
+  const steepness = direction.x * sx + direction.y * sy + direction.z * sz
+  const nearest = -(ox * sx + oy * sy + oz * sz) / steepness
+  const mx = ox + direction.x * nearest
+  const my = oy + direction.y * nearest
+  const mz = oz + direction.z * nearest
+  const distanceSquared =
+    mx * (xx * mx + xy * my + xz * mz) + my * (xy * mx + yy * my + yz * mz) + mz * (xz * mx + yz * my + zz * mz)
+  if (distanceSquared > surfaceDistanceSquared) return Infinity
+  const half = Math.sqrt((surfaceDistanceSquared - distanceSquared) / steepness)
+  if (nearest + half < cut) return Infinity
+  return Math.max(nearest - half, cut)
+}
+
 // Writes into hit the ellipsoid the ray meets first, among those a test accepts by their place in the list, where one
 // is given: the ray passes through the rest. Nothing is drawn nearer along the ray than the cut, so an ellipsoid
 // wholly nearer is passed through, and one the cut crosses is met at its cut face. Centres are x, y, z triples, the
-// inverses those of the ellipsoids' covariances, and the ray's direction has unit length
+// inverses those of the ellipsoids' covariances, and the ray's direction has unit length. Of two met at the same
+// distance, the one earlier in the list is kept
 export function nearestEllipsoid(
   ray: Ray,
   centers: Float32Array,
@@ -65,37 +105,11 @@ export function nearestEllipsoid(
   hit: EllipsoidHit,
   accepts?: (index: number) => boolean,
 ) {
-  const { origin, direction } = ray
   const count = centers.length / 3
   hit.index = -1
   hit.distance = Infinity
   for (let i = 0; i < count; i++) {
-    const at = i * covarianceSize
-    const xx = inverses[at]
-    const xy = inverses[at + 1]
-    const xz = inverses[at + 2]
-    const yy = inverses[at + 3]
-    const yz = inverses[at + 4]
-    const zz = inverses[at + 5]
-    const ox = origin.x - centers[i * 3]
-    const oy = origin.y - centers[i * 3 + 1]
-    const oz = origin.z - centers[i * 3 + 2]
-    // The inverse times the direction, how steeply the ellipsoid's measure climbs along the ray, and how far along
-    // the ray passes the centre nearest by that measure
-    const sx = xx * direction.x + xy * direction.y + xz * direction.z
-    const sy = xy * direction.x + yy * direction.y + yz * direction.z
-    const sz = xz * direction.x + yz * direction.y + zz * direction.z
-    const steepness = direction.x * sx + direction.y * sy + direction.z * sz
-    const nearest = -(ox * sx + oy * sy + oz * sz) / steepness
-    const mx = ox + direction.x * nearest
-    const my = oy + direction.y * nearest
-    const mz = oz + direction.z * nearest
-    const distanceSquared =
-      mx * (xx * mx + xy * my + xz * mz) + my * (xy * mx + yy * my + yz * mz) + mz * (xz * mx + yz * my + zz * mz)
-    if (distanceSquared > surfaceDistanceSquared) continue
-    const half = Math.sqrt((surfaceDistanceSquared - distanceSquared) / steepness)
-    if (nearest + half < cut) continue
-    const distance = Math.max(nearest - half, cut)
+    const distance = ellipsoidEntry(ray, centers, i * 3, inverses, i * covarianceSize, cut)
     if (distance >= hit.distance) continue
     if (accepts?.(i) === false) continue
     hit.index = i

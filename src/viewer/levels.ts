@@ -104,6 +104,44 @@ export function mergeGaussians(
   return merged
 }
 
+// The bits of a double, high word and low word, as the histograms below read them. Two doubles at or above 0 are in
+// the same order as their bits read as whole numbers, high word first
+const double = new Float64Array(1)
+const words = new Uint32Array(double.buffer)
+const [lowWord, highWord] = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1 ? [0, 1] : [1, 0]
+
+// The digits a double's bits are read in, sixteen bits each from the highest, and how many values a digit takes
+const digitCount = 4
+const digitValues = 1 << 16
+
+// One of a double's four digits, from the highest
+function digitOf(value: number, digit: number) {
+  double[0] = value
+  const word = words[digit < 2 ? highWord : lowWord]
+  return digit % 2 === 0 ? word >>> 16 : word & 0xffff
+}
+
+// The value at a rank among values at or above 0, as a sort would place it, without sorting them: a histogram of
+// their highest digit finds the digit the ranked value has, and each lower digit's histogram, over the values that
+// share the digits found so far, the next, until a few values are left to sort, or every digit is found and the values
+// left are all the same
+function ranked(values: Float64Array, rank: number) {
+  const counts = new Uint32Array(digitValues)
+  // The values whose digits so far match, as their digits are found
+  let matching = values
+  for (let digit = 0; digit < digitCount; digit++) {
+    if (matching.length <= digitValues) return Float64Array.from(matching).sort()[rank]
+    counts.fill(0)
+    for (let i = 0; i < matching.length; i++) counts[digitOf(matching[i], digit)]++
+    let found = 0
+    while (rank >= counts[found]) rank -= counts[found++]
+    const next = new Float64Array(counts[found])
+    for (let i = 0, k = 0; i < matching.length; i++) if (digitOf(matching[i], digit) === found) next[k++] = matching[i]
+    matching = next
+  }
+  return matching[0]
+}
+
 // The typical drawn diameter of a set of Gaussians, in the covariances' units: the median over them of the diameter a
 // round Gaussian of the same mean variance is drawn at, twice the cutoff in standard deviations times the root of a
 // third of the covariance's trace. It's 0 for no Gaussians
@@ -115,9 +153,8 @@ export function typicalDiameter(covariances: Float32Array, cutoff: number) {
     const trace = covariances[i * 6] + covariances[i * 6 + 3] + covariances[i * 6 + 5]
     diameters[i] = 2 * cutoff * Math.sqrt(trace / 3)
   }
-  diameters.sort()
   const middle = count >> 1
-  return count % 2 === 1 ? diameters[middle] : (diameters[middle - 1] + diameters[middle]) / 2
+  return count % 2 === 1 ? ranked(diameters, middle) : (ranked(diameters, middle - 1) + ranked(diameters, middle)) / 2
 }
 
 // How many pixels across a level's typical Gaussian must still be for that level to be drawn, chosen by eye on the
@@ -130,11 +167,23 @@ export function pixelsPerUnit(viewportHeight: number, fov: number, depth: number
   return viewportHeight / (2 * depth * Math.tan((fov * Math.PI) / 360))
 }
 
-// Which level to draw, by the levels' typical diameters, finest first, and the pixels a unit of them spans: the finest
-// level whose typical Gaussian still spans the pixels a level needs, or the coarsest where none does
-export function levelToDraw(diameters: readonly number[], pixels: number) {
-  for (let level = 0; level < diameters.length; level++) {
-    if (diameters[level] * pixels >= levelPixels) return level
+// The level drawn for the whole structure, by its place in levels, given the levels' typical diameters, finest first,
+// and the pixels a unit of them spans: under auto the finest level offered whose typical Gaussian still spans the
+// pixels a level needs, or the coarsest offered where none does, and under a fixed Detail that level, or the finest one
+// offered past it where it isn't. A level is offered only where all its instances fit its pool, and the coarsest always
+// is; a level not offered may give any diameter
+export function levelDrawn(detail: Detail, offered: readonly boolean[], diameters: readonly number[], pixels: number) {
+  const coarsest = levels.length - 1
+  if (detail !== 'auto') {
+    let level = levels.indexOf(detail)
+    while (level < coarsest && !offered[level]) level++
+    return level
   }
-  return diameters.length - 1
+  let last = coarsest
+  for (let level = 0; level < levels.length; level++) {
+    if (!offered[level]) continue
+    if (diameters[level] * pixels >= levelPixels) return level
+    last = level
+  }
+  return last
 }

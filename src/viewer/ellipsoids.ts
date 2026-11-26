@@ -1,7 +1,8 @@
-// An atom's thermal ellipsoid as a covariance: the region the atom spends half its time in, by its anisotropic
-// displacement, or by its B-factor alike in every direction where the entry gives it none
+// An atom's ellipsoid as a covariance: its van der Waals sphere at Size, spread by its thermal motion, or its thermal
+// ellipsoid, the region the atom spends half its time in, by its anisotropic displacement, or by its B-factor alike in
+// every direction where the entry gives it none
 import { tensorOf, type Structure } from '../pdb/structure.ts'
-import { surfaceDeviations } from './ellipsoidGeometry.ts'
+import { surfaceDeviations, writeRound } from './ellipsoidGeometry.ts'
 
 // An atom lies within its half-probability ellipsoid at a Mahalanobis distance of the square root of the median of χ²
 // with three degrees of freedom, and an ellipsoid's surface is drawn two standard deviations out. So the covariance
@@ -24,9 +25,11 @@ const pairs = [
 ] as const
 const maxSweeps = 32
 
-// The matrix being diagonalised and its eigenvectors as columns, both 3×3 in row order, reused by every call
+// The matrix being diagonalised and its eigenvectors as columns, both 3×3 in row order, and the covariance rebuilt
+// from them, reused by every call
 const matrix = new Float64Array(9)
 const vectors = new Float64Array(9)
+const rebuilt = new Float64Array(6)
 
 // Writes the ellipsoid at Size of the structure's atom, by its row, into target at offset, as a covariance in the order
 // [xx, xy, xz, yy, yz, zz], with every eigenvalue raised to at least the least variance
@@ -66,7 +69,7 @@ export function writeEllipsoid(target: Float32Array, offset: number, structure: 
   }
 
   // Rebuilt from its eigenvectors, each scaled by its raised eigenvalue
-  const out = [0, 0, 0, 0, 0, 0]
+  const out = rebuilt.fill(0)
   for (let i = 0; i < 3; i++) {
     const value = Math.max(matrix[i * 4], leastVariance)
     const x = vectors[i]
@@ -119,4 +122,31 @@ function diagonalise() {
       }
     }
   }
+}
+
+// What an atom's ellipsoid follows: Size, Thermal and Ellipsoids
+export interface AtomShape {
+  scale: number
+  thermal: number
+  ellipsoids: boolean
+}
+
+// Writes the ellipsoid the structure's atom, by its row, is drawn as, into target at offset, given the van der Waals
+// radii of the structure's elements: its thermal ellipsoid under Ellipsoids, and otherwise its van der Waals sphere at
+// Size, which thermal motion spreads by its displacement, whose variance adds to its own
+export function writeAtomShape(
+  target: Float32Array,
+  offset: number,
+  structure: Structure,
+  atom: number,
+  radii: readonly number[],
+  { scale, thermal, ellipsoids }: AtomShape,
+) {
+  if (ellipsoids) {
+    writeEllipsoid(target, offset, structure, atom, scale)
+    return
+  }
+  const size = (radii[structure.atoms.element[atom]] * scale) / surfaceDeviations
+  const spread = (thermal * Math.max(structure.atoms.bFactor[atom], 0)) / bPerU
+  writeRound(target, offset, Math.sqrt(size * size + spread))
 }
