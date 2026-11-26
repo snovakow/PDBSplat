@@ -2,6 +2,10 @@
 
 Version Release Notes
 
+## 0.4.0 - 2026-11-26
+
+- Large entries drawn as they arrive, the view easing out to keep them framed
+
 ## 0.3.0 - 2026-11-26
 
 - Entries loaded in the background as they download, up to the PDB's largest of eleven million atoms
