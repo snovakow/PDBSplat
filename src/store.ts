@@ -2,13 +2,15 @@ import type { Raycaster } from 'three'
 import { create } from 'zustand'
 import { shallow } from 'zustand/shallow'
 import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
+import { noBounds, type StructureBounds } from './pdb/bounds.ts'
 import type { Burial } from './pdb/burial.ts'
 import type { LoadProgress } from './pdb/entryLoad.ts'
-import { fetchEntry, isAbort, mergeEntry, type Entry } from './pdb/fetchEntry.ts'
+import { fetchEntry, isAbort, mergeEntry, type Entry, type Loaded } from './pdb/fetchEntry.ts'
 import type { MergedLevels } from './pdb/merge.ts'
 import {
   emptyStructure,
   modelOf,
+  roomToGrow,
   selectAtoms,
   shownBy,
   type ShownAtoms,
@@ -72,7 +74,9 @@ export function shownChoice(state: Pick<State, 'options' | 'models' | 'model'>):
   return { hydrogens, waters, conformations, model: shownModel(state) }
 }
 
-// What the shown atoms were last selected from, and the selection, so that the same one comes back while they stand
+// What the shown atoms were last selected from, and the selection, so that the same one comes back while they stand.
+// While a structure arrives, its selection is kept in columns with room to grow, which each batch's shown atoms are
+// added to
 interface LastShown {
   structure: Structure
   hydrogens: boolean
@@ -80,35 +84,66 @@ interface LastShown {
   conformations: ViewOptions['conformations']
   model: number | null
   shown: ShownAtoms
+  growing: { mask: Uint8Array; rows: Uint32Array } | null
 }
 let lastShown: LastShown | null = null
 
 // The atoms drawn: the structure's atoms that isShown keeps under Hydrogens, Waters, Alternates and the model shown.
 // The same selection comes back while those stand, so that the panel's count and the drawing components, which each
 // read it from the store, select once for every change of it and not at all for any other change, such as of the atom
-// under the pointer
+// under the pointer. A later snapshot of a structure as it arrives keeps every atom the last one's selection chose,
+// and the atoms after them are tested alone
 export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models' | 'model'>): ShownAtoms {
   const { structure } = state
   const choice = shownChoice(state)
   const { hydrogens, waters, conformations, model } = choice
   const last = lastShown
-  if (
-    last &&
-    last.structure === structure &&
+  const same =
+    last !== null &&
     last.hydrogens === hydrogens &&
     last.waters === waters &&
     last.conformations === conformations &&
     last.model === model
-  ) {
-    return last.shown
-  }
+  if (same && last.structure === structure) return last.shown
   const { flags } = structure.atoms
-  const shown = selectAtoms(structure, (atom) => shownBy(flags[atom], modelOf(structure, atom), choice))
-  lastShown = { structure, hydrogens, waters, conformations, model, shown }
+  const keep = (atom: number) => shownBy(flags[atom], modelOf(structure, atom), choice)
+  if (!structure.arrival) {
+    const shown = selectAtoms(structure, keep)
+    lastShown = { structure, hydrogens, waters, conformations, model, shown, growing: null }
+    return shown
+  }
+  // Grown on from the last selection where it's of an earlier snapshot of the same structure
+  const onward =
+    same &&
+    last.growing !== null &&
+    last.structure.arrival === structure.arrival &&
+    last.structure.atoms.count <= structure.atoms.count
+  const from = onward ? last.structure.atoms.count : 0
+  let kept = onward ? last.shown.count : 0
+  const count = structure.atoms.count
+  let growing = onward ? last.growing : null
+  if (!growing || growing.mask.length < count) {
+    const capacity = roomToGrow(count, structure.arrival.expectedAtoms, growing?.mask.length ?? 0)
+    const mask = new Uint8Array(capacity)
+    const rows = new Uint32Array(capacity)
+    if (growing) {
+      mask.set(growing.mask.subarray(0, from))
+      rows.set(growing.rows.subarray(0, kept))
+    }
+    growing = { mask, rows }
+  }
+  for (let atom = from; atom < count; atom++) {
+    if (!keep(atom)) continue
+    growing.mask[atom] = 1
+    growing.rows[kept++] = atom
+  }
+  const shown: ShownAtoms = { mask: growing.mask.subarray(0, count), rows: growing.rows.subarray(0, kept), count: kept }
+  lastShown = { structure, hydrogens, waters, conformations, model, shown, growing }
   return shown
 }
 
-// What the entry was last found to hold, so that the same object comes back while its structure stands
+// What the entry was last found to hold, so that the same object comes back while its structure stands, or while what
+// it holds does
 let lastHeld: { structure: Structure; holds: EntryHolds } | null = null
 
 // What the entry holds that a control acts on: more than one model, atoms recorded in alternate positions, waters,
@@ -123,8 +158,18 @@ export function entryHolds({ structure }: Pick<State, 'structure'>): EntryHolds 
     hydrogens: tallies.hydrogens > 0,
     ligands: hasLigands(structure),
   }
-  lastHeld = { structure, holds }
-  return holds
+  // A later snapshot of an entry as it arrives mostly holds what the one before did, which then comes back as it was
+  const held = structure.arrival !== null && lastHeld?.structure.arrival === structure.arrival ? lastHeld.holds : undefined
+  const same =
+    held !== undefined &&
+    held.models === holds.models &&
+    held.alternates === holds.alternates &&
+    held.waters === holds.waters &&
+    held.hydrogens === holds.hydrogens &&
+    held.ligands === holds.ligands
+  const kept = same ? held : holds
+  lastHeld = { structure, holds: kept }
+  return kept
 }
 
 // The nearest atom a ray has met so far, by its row, and how far along the ray, or null and Infinity before any
@@ -138,7 +183,7 @@ export interface PickHit {
 export type PickTest = (raycaster: Raycaster, hit: PickHit) => void
 
 interface State {
-  // The entry shown, which stays until the next one is ready
+  // The entry shown, which stays until the next one's first batch arrives, and then grows as the rest of it does
   id: string
   title: string
   // Every model's atoms in every conformation, and its residues, runs and chains
@@ -148,6 +193,8 @@ interface State {
   model: number
   // Moves playback on to the next model, and from the last back to the first
   nextModel: () => void
+  // The entry's bounds, as far as it has arrived and exactly once it has
+  bounds: StructureBounds
   // The latest load, and its message if it failed, and how far it has come while it's under way
   status: Status
   error: string | null
@@ -174,10 +221,29 @@ interface State {
 // Each load's number, so that a superseded load's progress, which may still be on its way, changes nothing
 let loads = 0
 
+// The store's entry once a load has given it, whole or as far as it has arrived. A later batch of the entry shown keeps
+// the model played, the atoms hovered and picked, and the burial; any other entry starts on its first model with none
+function arrivedState(state: State, { entry, merged, bounds, burial }: Loaded): Partial<State> {
+  const { models } = entry
+  const grown = entry.arrival !== null && state.structure.arrival === entry.arrival
+  return {
+    id: entry.id,
+    title: entry.title,
+    structure: entry,
+    models,
+    model: grown && models.includes(state.model) ? state.model : (models[0] ?? 0),
+    merged,
+    bounds,
+    burial: grown ? (state.burial ?? burial) : burial,
+    ...(grown ? {} : { hovered: null, picked: null }),
+  }
+}
+
 export const useStore = create<State>()((set, get) => ({
   id: '',
   title: '',
   structure: emptyStructure,
+  bounds: noBounds,
   models: [],
   model: 0,
   status: 'idle',
@@ -212,12 +278,16 @@ export const useStore = create<State>()((set, get) => ({
     set({ status: 'loading', error: null, progress: null })
     const { hydrogens, waters, conformations, models: shownModels } = get().options
     try {
-      const { entry, merged, burial } = await fetchEntry(
+      const loaded = await fetchEntry(
         id,
         { hydrogens, waters, conformations, allModels: shownModels === 'all' },
         {
           progress: (progress) => {
             if (load === loads) set({ progress })
+          },
+          // Each batch puts the entry as it stands on screen, the first in place of the entry shown before
+          arrived: (arrived) => {
+            if (load === loads) set(arrivedState(get(), arrived))
           },
           // The burial lands on the entry it was worked out for, while that's the one shown
           burial: (of: Entry, landed: Burial) => {
@@ -225,21 +295,12 @@ export const useStore = create<State>()((set, get) => ({
           },
         },
       )
-      const { models, atoms, tallies } = entry
-      set({
-        id: entry.id,
-        title: entry.title,
-        structure: entry,
-        models,
-        model: models[0] ?? 0,
-        status: 'ready',
-        progress: null,
-        merged,
-        burial,
-        hovered: null,
-        picked: null,
-      })
+      // A later call for the same entry shares its load, and the latest call alone takes it
+      if (load !== loads) return
+      const { entry } = loaded
+      set({ ...arrivedState(get(), loaded), status: 'ready', progress: null })
       // The counts are of the atoms shown at the defaults, then of the models and conformations beyond them
+      const { models, atoms, tallies } = entry
       const { defaults } = tallies
       console.info(
         `PDBSplat: ${entry.id}, "${entry.title}": ${defaults.atoms} atoms, ` +

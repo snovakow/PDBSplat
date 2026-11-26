@@ -17,14 +17,13 @@ import type { ColorBy } from '../options.ts'
 import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestField } from '../surface/surfaceWorker.ts'
 import { createAtomTable, paintAtomTable, type AtomTable, type TablePaint } from './atomTable.ts'
-import type { Bounds } from './bounds.ts'
+import { useBounds } from './bounds.ts'
 import { fieldMarch, type FieldMarch } from './field.ts'
 import { cutAlong, setDrawnReach } from './nearPlane.ts'
 import { rayInto } from './placement.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
 
 interface Props {
-  bounds: Bounds
   // The structure's object, which the box is a child of
   structureObject: Object3D
 }
@@ -48,7 +47,9 @@ interface Drawn {
 
 // The shown atoms' density, sampled on a grid in a worker where the file puts them, and drawn as a cloud by a ray march
 // through the box the grid fills, placed by the structure's object and coloured by the atom nearest each point
-export function ProteinField({ bounds, structureObject }: Props) {
+export function ProteinField({ structureObject }: Props) {
+  // The entry's bounds, as far as it has arrived
+  const bounds = useBounds()
   const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
@@ -92,8 +93,10 @@ export function ProteinField({ bounds, structureObject }: Props) {
   useEffect(() => {
     const current = drawn.current
     if (!current) return undefined
-    // A new entry's field goes at once; for a changed option, the old one stays until the new one is ready
+    // A new entry's field goes at once; for a changed option, the old one stays until the new one is ready. An entry
+    // still arriving is sampled once it all has, as a field can't grow by parts
     if (current.field && current.field.structure !== structure) discard(current)
+    if (!structure.whole) return undefined
     if (shown.count === 0) {
       discard(current)
       return undefined

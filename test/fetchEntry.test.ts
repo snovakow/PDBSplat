@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { noBounds } from '../src/pdb/bounds.ts'
 import { buffersOf } from '../src/pdb/entryWorker.ts'
 import { EntryCache, fetchEntry, type Loaded } from '../src/pdb/fetchEntry.ts'
 import { StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
@@ -33,7 +34,7 @@ function loaded(id: string, atoms: number): Loaded {
   for (let i = 0; i < atoms; i++) builder.add({ ...atom, residueNumber: i })
   const empty = { count: 0, centers: new Float32Array(0), scatters: new Float32Array(0) }
   const choice = { hydrogens: false, waters: false, conformations: 'first', model: 1 } as const
-  return { entry: { id, ...builder.finish() }, merged: { choice, residues: empty, chains: empty }, burial: null }
+  return { entry: { id, ...builder.finish() }, merged: { choice, residues: empty, chains: empty }, bounds: noBounds, burial: null }
 }
 
 const bytesOf = (entry: Loaded) => buffersOf(entry).reduce((sum, buffer) => sum + buffer.byteLength, 0)
@@ -69,7 +70,7 @@ void test('the cache keeps the latest entries within its bytes, the earliest goi
 })
 
 void test("an ID that isn't four characters starting with a digit is refused before anything loads", async () => {
-  const handlers = { progress: () => undefined, burial: () => undefined }
+  const handlers = { progress: () => undefined, arrived: () => undefined, burial: () => undefined }
   const choice = { hydrogens: false, waters: false, conformations: 'first', allModels: false } as const
   await assert.rejects(fetchEntry(' crn1', choice, handlers), {
     message: `" crn1" isn't a PDB ID: those are four characters, starting with a digit`,

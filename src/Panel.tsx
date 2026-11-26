@@ -71,9 +71,8 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   // The latest load's state, how far it has come and whether the entry's burial has landed, as one line of text
   const status = useStore(statusText)
   const shown = useStore((s) => shownAtoms(s).count)
-  const structure = useStore((s) => s.structure)
-  const picked = useStore((s) => s.picked)
-  const manyModels = useStore((s) => s.models.length > 1)
+  // The picked atom named, which stands as an entry's later batches arrive
+  const picked = useStore((s) => (s.picked === null ? '' : atomText(s.structure, s.picked, s.models.length > 1)))
 
   const [, set]: PanelControls = useControls(() => {
     const { load, setOptions } = useStore.getState()
@@ -171,8 +170,8 @@ export function Panel({ forceWebGL, setForceWebGL, renderer }: PanelProps) {
   }, [set, id, title, shown, status])
 
   useEffect(() => {
-    set({ picked: picked === null ? '' : atomText(structure, picked, manyModels) })
-  }, [set, structure, picked, manyModels])
+    set({ picked })
+  }, [set, picked])
 
   return null
 }

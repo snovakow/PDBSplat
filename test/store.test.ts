@@ -242,3 +242,60 @@ void test('the opening look is solid spheres, which its ambient occlusion acts o
   assert.equal(firstEntry, '1IGT')
   assert.ok(examples.some((example) => example.id === firstEntry))
 })
+
+// Snapshots of a structure of the atoms given as it arrives, a batch at each residue's start
+function arriving(atoms: Partial<AtomRecord>[]): Structure[] {
+  const source = new StructureBuilder()
+  const target = new StructureBuilder()
+  const snapshots: Structure[] = []
+  for (const changes of atoms) {
+    if (source.atomCount > 0) {
+      source.callAtNextResidue(() => {
+        target.append(source.takeBatch(''), atoms.length)
+        snapshots.push(target.snapshot())
+      })
+    }
+    source.add({ ...base, ...changes })
+  }
+  target.append(source.takeBatch('', true))
+  snapshots.push(target.snapshot())
+  return snapshots
+}
+
+void test('the shown atoms of an entry as it arrives grow on from the last snapshot, as choosing afresh would choose them', () => {
+  const atoms: Partial<AtomRecord>[] = []
+  for (let residue = 1; residue <= 30; residue++) {
+    for (const atom of [heavy, hydrogen, alternate]) atoms.push({ ...atom, residueNumber: residue })
+    if (residue % 10 === 0) atoms.push({ ...water, residueNumber: 300 + residue })
+  }
+  const snapshots = arriving(atoms)
+  assert.ok(snapshots.length > 30)
+  const choices: Partial<ViewOptions>[] = [{}, { waters: true, hydrogens: false }, { conformations: 'all' }]
+  for (const changes of choices) {
+    const given: { rows: number[]; count: number }[] = []
+    for (const structure of snapshots) {
+      const state = { structure, options: { ...defaultOptions, ...changes }, models: structure.models, model: 1 }
+      const shown = shownAtoms(state)
+      const fresh = shownAtoms({ ...state, structure: { ...structure, arrival: null } })
+      assert.deepEqual([...shown.rows], [...fresh.rows])
+      assert.deepEqual([...shown.mask], [...fresh.mask])
+      assert.equal(shown.count, fresh.count)
+      // Asked again for the same snapshot, the same selection comes back
+      assert.equal(shownAtoms({ ...state }), shownAtoms({ ...state }))
+      given.push({ rows: [...shown.rows], count: shown.count })
+    }
+    // A selection given earlier stays as it was given, though later ones share its columns
+    const last = shownAtoms({ structure: snapshots.at(-1) ?? emptyStructure, options: { ...defaultOptions, ...changes }, models: [1], model: 1 })
+    for (const { rows, count } of given) assert.deepEqual(rows, [...last.rows.subarray(0, count)])
+  }
+})
+
+void test('what an entry holds keeps its object across its snapshots as it arrives, until a snapshot holds more', () => {
+  const snapshots = arriving([heavy, { ...heavy, residueNumber: 2 }, { ...heavy, residueNumber: 3 }, { ...water, residueNumber: 4 }])
+  const first = entryHolds({ structure: snapshots[0] })
+  assert.equal(entryHolds({ structure: snapshots[1] }), first)
+  assert.equal(entryHolds({ structure: snapshots[2] }), first)
+  const withWaters = entryHolds({ structure: snapshots[3] })
+  assert.notEqual(withWaters, first)
+  assert.equal(withWaters.waters, true)
+})

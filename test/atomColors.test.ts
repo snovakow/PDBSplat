@@ -114,6 +114,7 @@ void test('the rainbow places a later model\'s residues where the first model ha
   const chain = (model: number, numbers: number[]): Partial<AtomRecord>[] => numbers.map((residueNumber) => ({ model, residueNumber }))
   const structure = structureOf([...chain(1, [1, 2, 3]), ...chain(2, [1, 2, 3, 4])])
   const positions = rainbowPositions(structure)
+  assert.ok(positions)
   assert.deepEqual([...positions.subarray(0, 6)], [0, 0.5, 1, 0, 0.5, 1])
   // A residue the first model lacks has no place
   assert.ok(Number.isNaN(positions[6]))
@@ -153,6 +154,7 @@ void test('the rainbow runs from blue to red along each chain, and leaves atoms 
   const structure = structureOf([...chain('A', [1, 2, 3, 4, 5]), ligand, ...chain('B', [7, 8, 9]), lone])
   // The residues' rows: chain A's five, the heme, chain B's three and the lone residue
   const positions = rainbowPositions(structure)
+  assert.ok(positions)
   assert.equal(positions[0], 0)
   assert.equal(positions[2], 0.5)
   assert.equal(positions[4], 1)

@@ -2,9 +2,9 @@
 // loads one entry, or is handed one already loaded, and then keeps the columns that place its atoms, so that it can
 // work out the entry's burial and merge its levels again under another choice of the atoms shown
 import type { Burial } from './burial.ts'
-import type { LoadProgress, LoadReport } from './entryLoad.ts'
+import type { EntryBatch, LoadProgress } from './entryLoad.ts'
 import type { LoadChoice, MergedLevels } from './merge.ts'
-import type { AtomPlaces, ShownChoice, Structure } from './structure.ts'
+import type { AtomPlaces, ShownChoice } from './structure.ts'
 
 // What a worker is asked: to load an entry by its checked ID, merging its levels under a choice; to hold an entry's
 // columns, and work out its burial where it's asked to; or to merge the levels of the entry it holds under a choice
@@ -13,12 +13,13 @@ export type EntryRequest =
   | { kind: 'hold'; places: AtomPlaces; burial: boolean }
   | { kind: 'merge'; serial: number; choice: ShownChoice }
 
-// What it answers: the load's progress; the structure, whole, with its levels merged and what the load took; the
-// burial once it's worked out, with how long that took; the levels merged again for the request of that serial; or
-// why the load failed, as the page shows it
+// What it answers: the load's progress; each batch of what it has read, the last once the file is read, a request to
+// merge again made while it reads answered by a batch's blobs; the burial once it's worked out, with how long that
+// took; the levels merged again for the request of that serial once the entry is read; or why the load failed, as the
+// page shows it
 export type EntryReply =
   | { kind: 'progress'; progress: LoadProgress }
-  | { kind: 'structure'; structure: Structure; merged: MergedLevels; report: LoadReport }
+  | { kind: 'batch'; batch: EntryBatch }
   | { kind: 'burial'; burial: Burial; milliseconds: number }
   | { kind: 'merged'; serial: number; merged: MergedLevels }
   | { kind: 'failed'; message: string }

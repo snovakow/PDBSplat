@@ -1,15 +1,20 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
-import { Matrix4, Raycaster, Vector2 } from 'three'
+import { Matrix4, Raycaster, Vector2, type Object3D } from 'three'
 import { useStore, type PickHit, type PickTest } from '../store.ts'
 
 // A press released within this many CSS pixels of where it began is a click, which picks; a longer one orbits or pans
 const clickTolerance = 4
 
+interface Props {
+  // The structure's object, which the framing moves as it eases
+  structureObject: Object3D
+}
+
 // Names the atom under the pointer as it moves, at most once a frame and never while a button is held, and picks the
 // atom a click lands on, or clears the pick on a click on empty space. It listens beside the orbit controls and leaves
 // their events alone
-export function Picking() {
+export function Picking({ structureObject }: Props) {
   const get = useThree((s) => s.get)
   // The hover test, which the frame callback runs while the listeners are on
   const hoverTest = useRef<(() => void) | null>(null)
@@ -25,8 +30,12 @@ export function Picking() {
     // pixels from the canvas's top left, and whether it has moved since the last hover test. Then where a press of the
     // main button began, in the page's CSS pixels, while it's held
     const pointer = { over: false, x: 0, y: 0, moved: false, pressed: false, pressX: 0, pressY: 0 }
-    // What the last hover test saw: the view, and the drawing components' picks
-    const last: { view: Matrix4; picks: readonly PickTest[] } = { view: new Matrix4(), picks: [] }
+    // What the last hover test saw: the view, where the structure stood, and the drawing components' picks
+    const last: { view: Matrix4; placed: Matrix4; picks: readonly PickTest[] } = {
+      view: new Matrix4(),
+      placed: new Matrix4(),
+      picks: [],
+    }
 
     // The nearest atom any drawing component draws under a point of the canvas, as its last render showed it
     const atomAt = (atX: number, atY: number) => {
@@ -38,15 +47,17 @@ export function Picking() {
       return hit.atom
     }
 
-    // The atom under a still pointer changes too when the view does, or what's drawn
+    // The atom under a still pointer changes too when the view does, or what's drawn, or where the structure stands
     hoverTest.current = () => {
       if (!pointer.over) return
       const view = get().camera.matrixWorld
+      const placed = structureObject.matrixWorld
       const { picks } = useStore.getState()
-      if (!pointer.moved && picks === last.picks && view.equals(last.view)) return
+      if (!pointer.moved && picks === last.picks && view.equals(last.view) && placed.equals(last.placed)) return
       pointer.moved = false
       last.picks = picks
       last.view.copy(view)
+      last.placed.copy(placed)
       hover(atomAt(pointer.x, pointer.y))
     }
 
@@ -107,7 +118,7 @@ export function Picking() {
       hoverTest.current = null
       hover(null)
     }
-  }, [get])
+  }, [get, structureObject])
 
   useFrame(() => hoverTest.current?.())
 

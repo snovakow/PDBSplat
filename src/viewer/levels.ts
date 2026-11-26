@@ -166,19 +166,28 @@ function ranked(values: Float64Array, rank: number) {
   return matching[0]
 }
 
-// The typical drawn diameter of a set of Gaussians, in the covariances' units: the median over them of the diameter a
-// round Gaussian of the same mean variance is drawn at, twice the cutoff in standard deviations times the root of a
-// third of the covariance's trace. It's 0 for no Gaussians
+// The diameter a Gaussian with a covariance at an offset is drawn at, as a round one of the same mean variance is: twice
+// the cutoff in standard deviations times the root of a third of the covariance's trace
+export function drawnDiameter(covariances: ArrayLike<number>, at: number, cutoff: number) {
+  const trace = covariances[at] + covariances[at + 3] + covariances[at + 5]
+  return 2 * cutoff * Math.sqrt(trace / 3)
+}
+
+// The median of values at or above 0, or 0 for none
+export function medianOf(values: Float64Array) {
+  const count = values.length
+  if (count === 0) return 0
+  const middle = count >> 1
+  return count % 2 === 1 ? ranked(values, middle) : (ranked(values, middle - 1) + ranked(values, middle)) / 2
+}
+
+// The typical drawn diameter of a set of Gaussians, in the covariances' units: the median over them of the diameter
+// each is drawn at. It's 0 for no Gaussians
 export function typicalDiameter(covariances: Float32Array, cutoff: number) {
   const count = covariances.length / 6
-  if (count === 0) return 0
   const diameters = new Float64Array(count)
-  for (let i = 0; i < count; i++) {
-    const trace = covariances[i * 6] + covariances[i * 6 + 3] + covariances[i * 6 + 5]
-    diameters[i] = 2 * cutoff * Math.sqrt(trace / 3)
-  }
-  const middle = count >> 1
-  return count % 2 === 1 ? ranked(diameters, middle) : (ranked(diameters, middle - 1) + ranked(diameters, middle)) / 2
+  for (let i = 0; i < count; i++) diameters[i] = drawnDiameter(covariances, i * 6, cutoff)
+  return medianOf(diameters)
 }
 
 // How many pixels across a level's typical Gaussian must still be for that level to be drawn, chosen by eye on the

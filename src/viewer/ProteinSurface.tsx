@@ -7,7 +7,7 @@ import type { ColorBy } from '../options.ts'
 import { shownAtoms, useStore, type PickTest } from '../store.ts'
 import { requestSurface } from '../surface/surfaceWorker.ts'
 import { atomColors } from './atomColors.ts'
-import type { Bounds } from './bounds.ts'
+import { useBounds } from './bounds.ts'
 import { cutAlong, setDrawnReach } from './nearPlane.ts'
 import { rayInto } from './placement.ts'
 import { nearestSphere, type SphereHit } from './raySpheres.ts'
@@ -15,7 +15,6 @@ import { cutMask, meshColor, samePlacement } from './shading.ts'
 import { isBackShell } from './styles.ts'
 
 interface Props {
-  bounds: Bounds
   // The structure's object, which the meshes are children of
   structureObject: Object3D
 }
@@ -48,7 +47,9 @@ interface Surface {
 
 // The shown atoms' surface, meshed by marching cubes in a worker where the file puts them, placed by the structure's
 // object, and lit from the viewer, as the spheres are
-export function ProteinSurface({ bounds, structureObject }: Props) {
+export function ProteinSurface({ structureObject }: Props) {
+  // The entry's bounds, as far as it has arrived
+  const bounds = useBounds()
   const structure = useStore((s) => s.structure)
   const shown = useStore(shownAtoms)
   const colorBy = useStore((s) => s.options.colorBy)
@@ -101,11 +102,13 @@ export function ProteinSurface({ bounds, structureObject }: Props) {
   }, [structureObject])
 
   useEffect(() => {
-    // A new entry's surface goes at once; for a changed option, the old one stays until the new one is ready
+    // A new entry's surface goes at once; for a changed option, the old one stays until the new one is ready. An entry
+    // still arriving is meshed once it all has, as a surface can't grow by parts
     if (surface.current && surface.current.structure !== structure) {
       discard(structureObject, surface.current)
       surface.current = null
     }
+    if (!structure.whole) return undefined
     if (shown.count === 0) {
       if (surface.current) discard(structureObject, surface.current)
       surface.current = null

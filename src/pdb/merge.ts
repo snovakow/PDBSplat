@@ -5,7 +5,7 @@
 // blob's covariance, the weighted mean of its members' own covariances, follows Size, Thermal and Ellipsoids, and is
 // added where the atoms are drawn, so that none of those three needs a merge
 import { vdwRadius } from './elements.ts'
-import type { AtomRecord } from './structure.ts'
+import { roomToGrow, type AtomRecord } from './structure.ts'
 import {
   chainOf,
   firstConformationFlag,
@@ -59,9 +59,53 @@ class LevelColumns {
     this.scatters.set(scatter, blob * 6)
   }
 
-  finish(): MergedLevel {
-    return { count: this.count, centers: this.centers.slice(0, this.count * 3), scatters: this.scatters.slice(0, this.count * 6) }
+  // Makes room for a count of blobs all told, where it has less
+  reserve(capacity: number) {
+    if (capacity * 3 <= this.centers.length) return
+    const centers = new Float32Array(capacity * 3)
+    centers.set(this.centers.subarray(0, this.count * 3))
+    this.centers = centers
+    const scatters = new Float32Array(capacity * 6)
+    scatters.set(this.scatters.subarray(0, this.count * 6))
+    this.scatters = scatters
   }
+
+  // Adds blobs already merged after the last, growing to an expected count where they don't fit
+  append(level: MergedLevel, expected: number) {
+    const end = this.count + level.count
+    if (end * 3 > this.centers.length) this.reserve(roomToGrow(end, expected, this.centers.length / 3))
+    this.centers.set(level.centers.subarray(0, level.count * 3), this.count * 3)
+    this.scatters.set(level.scatters.subarray(0, level.count * 6), this.count * 6)
+    this.count = end
+  }
+
+  // The blobs from one on, copied
+  from(first: number): MergedLevel {
+    return {
+      count: this.count - first,
+      centers: this.centers.slice(first * 3, this.count * 3),
+      scatters: this.scatters.slice(first * 6, this.count * 6),
+    }
+  }
+
+  // The blobs so far, as views of the columns, which later blobs are added after
+  view(): MergedLevel {
+    return { count: this.count, centers: this.centers.subarray(0, this.count * 3), scatters: this.scatters.subarray(0, this.count * 6) }
+  }
+
+  finish(): MergedLevel {
+    return this.from(0)
+  }
+}
+
+// The blobs merged since the last batch, as a batch carries them: the choice they're of, whether they start the levels
+// afresh, as a new choice does, the residues' blobs closed since, from the first not yet given, and every chain's blob
+// as its residues so far make it
+export interface MergedBatch {
+  choice: ShownChoice
+  reset: boolean
+  residues: MergedLevel & { from: number }
+  chains: MergedLevel
 }
 
 // What a chain's sums keep, per chain: its members' summed weight, their weighted offsets from the chain's origin,
@@ -72,7 +116,6 @@ const chainSums = 10
 // atom's place, and each chain's about its first residue's centre, so that nothing far from the origin loses precision
 export class LevelMerge {
   private readonly residues = new LevelColumns()
-  private readonly chains = new LevelColumns()
   // Each chain's blob by its row, or -1 before its first shown atom, and how many chains have one
   private chainBlobs = new Int32Array(64).fill(-1)
   private chainCount = 0
@@ -95,6 +138,8 @@ export class LevelMerge {
   private syz = 0
   private szz = 0
   private readonly scatter = new Float64Array(6)
+  // How many of the residues' blobs the batches taken so far hold
+  private residuesTaken = 0
 
   // Adds an atom at a place with a weight above 0, in its residue and chain by their rows. A residue's atoms come
   // together, and residues of a chain may come apart, as a chain's ligands and waters do
@@ -125,7 +170,22 @@ export class LevelMerge {
   // Both levels, once every atom is added
   finish(choice: ShownChoice): MergedLevels {
     this.closeResidue()
+    return { choice, residues: this.residues.finish(), chains: this.chainLevel() }
+  }
+
+  // The blobs merged since the last time, at a residue's start, where every residue added is whole: the residues'
+  // closed since, and every chain's as it stands
+  take(choice: ShownChoice, reset: boolean): MergedBatch {
+    this.closeResidue()
+    const from = this.residuesTaken
+    this.residuesTaken = this.residues.count
+    return { choice, reset, residues: { ...this.residues.from(from), from }, chains: this.chainLevel() }
+  }
+
+  // Every chain's blob from its sums so far, in the order the chains' blobs were numbered as they came
+  private chainLevel(): MergedLevel {
     const { sums, origins } = this
+    const chains = new LevelColumns()
     for (let blob = 0; blob < this.chainCount; blob++) {
       const k = blob * chainSums
       const w = sums[k]
@@ -139,10 +199,9 @@ export class LevelMerge {
       scatter[3] = sums[k + 7] / w - my * my
       scatter[4] = sums[k + 8] / w - my * mz
       scatter[5] = sums[k + 9] / w - mz * mz
-      this.chains.add(origins[blob * 3] + mx, origins[blob * 3 + 1] + my, origins[blob * 3 + 2] + mz, scatter)
+      chains.add(origins[blob * 3] + mx, origins[blob * 3 + 1] + my, origins[blob * 3 + 2] + mz, scatter)
     }
-    // The chains' blobs were numbered as they came, and are written in that order once each is whole
-    return { choice, residues: this.residues.finish(), chains: this.chains.finish() }
+    return chains.finish()
   }
 
   // Writes the open residue's blob, and adds it to its chain's sums
@@ -219,16 +278,21 @@ function weightOf(radius: number) {
   return radius * radius * radius
 }
 
-// Merges a structure's atoms that a choice shows, from the columns that place them
-export function mergeLevels(structure: AtomPlaces, choice: ShownChoice): MergedLevels {
-  const merge = new LevelMerge()
+// Adds a structure's first atoms, up to a count, that a choice shows to a merge, from the columns that place them
+function mergeAtoms(merge: LevelMerge, structure: AtomPlaces, choice: ShownChoice, count: number) {
   const weights = structure.elements.map((symbol) => weightOf(vdwRadius(symbol)))
-  const { count, positions, flags, element, residue } = structure.atoms
+  const { positions, flags, element, residue } = structure.atoms
   for (let atom = 0; atom < count; atom++) {
     if (!shownBy(flags[atom], modelOf(structure, atom), choice)) continue
     const at = atom * 3
     merge.add(positions[at], positions[at + 1], positions[at + 2], weights[element[atom]], residue[atom], chainOf(structure, atom))
   }
+}
+
+// Merges a structure's atoms that a choice shows, from the columns that place them
+export function mergeLevels(structure: AtomPlaces, choice: ShownChoice): MergedLevels {
+  const merge = new LevelMerge()
+  mergeAtoms(merge, structure, choice, structure.atoms.count)
   return merge.finish(choice)
 }
 
@@ -242,11 +306,14 @@ export interface LoadChoice {
 }
 
 // Merges the atoms a reader adds as it reads them, those a load's choice shows, with the first model taken as the
-// first atom's
+// first atom's, until another choice is asked for, when the atoms read so far are merged again under it and the
+// atoms after them join that
 export class StreamMerge {
-  private readonly merge = new LevelMerge()
+  private merge = new LevelMerge()
   private readonly asked: LoadChoice
   private choice: ShownChoice | null = null
+  // Whether the next batch starts the levels afresh: the first does, and so does the one after another choice
+  private reset = true
   private readonly weights = new Map<string, number>()
   private readonly place = new Float32Array(3)
 
@@ -272,6 +339,21 @@ export class StreamMerge {
     this.merge.add(place[0], place[1], place[2], weight, residue, chain)
   }
 
+  // Merges the atoms read so far again under another choice, which the atoms after them are merged under too
+  rechoose(choice: ShownChoice, structure: AtomPlaces) {
+    this.choice = choice
+    this.merge = new LevelMerge()
+    mergeAtoms(this.merge, structure, choice, structure.atoms.count)
+    this.reset = true
+  }
+
+  // What's been merged since the last batch, at a residue's start
+  take(): MergedBatch {
+    const batch = this.merge.take(this.choice ?? choiceOf(this.asked, null), this.reset)
+    this.reset = false
+    return batch
+  }
+
   finish(): MergedLevels {
     return this.merge.finish(this.choice ?? choiceOf(this.asked, null))
   }
@@ -280,4 +362,29 @@ export class StreamMerge {
 // The choice a load asked for, with its model found
 function choiceOf({ hydrogens, waters, conformations }: LoadChoice, model: number | null): ShownChoice {
   return { hydrogens, waters, conformations, model }
+}
+
+// The merged levels as the page holds them while an entry arrives: each batch's residue blobs after the last, and
+// its chains' blobs in place of the last batch's, or the levels afresh where a batch starts them so
+export class MergedGrowth {
+  private choice: ShownChoice | null = null
+  private residues = new LevelColumns()
+  private chains: MergedLevel = { count: 0, centers: new Float32Array(0), scatters: new Float32Array(0) }
+
+  // Takes a batch, growing the residues' columns to a count expected of the whole where they're short
+  append(batch: MergedBatch, expectedResidues: number) {
+    if (batch.reset) this.residues = new LevelColumns()
+    if (batch.residues.from !== this.residues.count) {
+      throw new Error(`A batch of merged residues from ${batch.residues.from} came after ${this.residues.count}`)
+    }
+    this.residues.append(batch.residues, expectedResidues)
+    this.chains = batch.chains
+    this.choice = batch.choice
+  }
+
+  // The levels as they stand, the residues' as views of their growing columns, or null before any batch
+  snapshot(): MergedLevels | null {
+    if (!this.choice) return null
+    return { choice: this.choice, residues: this.residues.view(), chains: this.chains }
+  }
 }

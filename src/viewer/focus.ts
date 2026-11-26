@@ -5,6 +5,7 @@ import {
   insertionOf,
   polymerFlag,
   waterFlag,
+  type Arrival,
   type Structure,
 } from '../pdb/structure.ts'
 import type { Focus } from '../options.ts'
@@ -80,24 +81,52 @@ export function focusTest(structure: Structure, focus: Focus, picked: number | n
   return null
 }
 
-// Each entry's nucleotides, kept beside its tables, which are never changed
+// Each entry's nucleotides, kept beside its tables, which are never changed, and those of the entry arriving, kept as
+// its atoms come in a column with room to grow: how many atoms they're found among so far
 const nucleotideSets = new WeakMap<Structure, Uint8Array>()
+let arrivingNucleotides: { arrival: Arrival; atoms: number; residues: Uint8Array } | null = null
+
+// How much room the nucleotides of an entry arriving grow by once their column is full
+const nucleotideGrowth = 1.5
+
+// Marks the nucleotides among the atoms from one row up to another
+function markNucleotides(structure: Structure, residues: Uint8Array, from: number, to: number) {
+  const { atoms } = structure
+  const sugar = structure.atomNames.indexOf(nucleotideAtom)
+  const polymer = polymerFlag | firstConformationFlag
+  for (let atom = from; atom < to; atom++) {
+    if (atoms.name[atom] === sugar && (atoms.flags[atom] & polymer) === polymer) residues[atoms.residue[atom]] = 1
+  }
+}
 
 // Whether each residue, by its row, is a polymer residue with the sugar atom a base joins in its first conformation, so
-// that a phosphorylated amino acid's side-chain phosphorus isn't taken for a nucleic acid's backbone
+// that a phosphorylated amino acid's side-chain phosphorus isn't taken for a nucleic acid's backbone. A residue's atoms
+// arrive together, so an entry arriving has its later atoms' residues marked as they come
 function nucleotideResidues(structure: Structure) {
-  let residues = nucleotideSets.get(structure)
-  if (!residues) {
-    const { atoms } = structure
-    const sugar = structure.atomNames.indexOf(nucleotideAtom)
-    residues = new Uint8Array(structure.residues.count)
-    const polymer = polymerFlag | firstConformationFlag
-    for (let atom = 0; atom < atoms.count; atom++) {
-      if (atoms.name[atom] === sugar && (atoms.flags[atom] & polymer) === polymer) residues[atoms.residue[atom]] = 1
+  const { arrival } = structure
+  if (!arrival) {
+    let residues = nucleotideSets.get(structure)
+    if (!residues) {
+      residues = new Uint8Array(structure.residues.count)
+      markNucleotides(structure, residues, 0, structure.atoms.count)
+      nucleotideSets.set(structure, residues)
     }
-    nucleotideSets.set(structure, residues)
+    return residues
   }
-  return residues
+  let arriving = arrivingNucleotides
+  if (!arriving || arriving.arrival !== arrival || arriving.atoms > structure.atoms.count) {
+    arriving = { arrival, atoms: 0, residues: new Uint8Array(0) }
+  }
+  const count = structure.residues.count
+  if (arriving.residues.length < count) {
+    const grown = new Uint8Array(Math.max(count, Math.ceil(arriving.residues.length * nucleotideGrowth)))
+    grown.set(arriving.residues)
+    arriving.residues = grown
+  }
+  markNucleotides(structure, arriving.residues, arriving.atoms, structure.atoms.count)
+  arriving.atoms = structure.atoms.count
+  arrivingNucleotides = arriving
+  return arriving.residues.subarray(0, count)
 }
 
 // Whether an atom is a ligand's: of a residue outside the polymer chains, other than a water
@@ -116,8 +145,10 @@ const bindingSites = new WeakMap<Structure, Uint8Array | null>()
 // Whether each residue, by its row, is kept by the ligands' Focus: in a model with ligands, the ligands, its residues
 // outside polymer chains other than waters, and every residue with an atom within the binding distance of one of
 // theirs, all in their first conformations; and every residue of a model without ligands. Null for an entry without
-// ligands
+// ligands, and for one still arriving, whose ligands may have neighbours yet to come, so that it keeps every atom
+// until it's all there
 export function bindingSite(structure: Structure) {
+  if (!structure.whole) return null
   let site = bindingSites.get(structure)
   if (site === undefined) {
     const { atoms, residues, chains, models } = structure

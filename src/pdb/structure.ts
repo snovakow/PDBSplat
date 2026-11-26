@@ -108,6 +108,14 @@ export interface Tallies {
   defaults: { atoms: number; waters: number; hydrogens: number; alternates: number }
 }
 
+// A structure read in batches, as the page sees it while it arrives: a snapshot after each batch, each holding every
+// row the one before it held, unchanged, and more after them, until the last, which is whole and may also give the
+// residues their secondary structure afresh and the atoms their tensors. Every snapshot of one structure names the
+// same arrival, which also says how many atoms the whole is expected to hold, for what's sized by it as it grows
+export interface Arrival {
+  expectedAtoms: number
+}
+
 export interface Structure {
   title: string
   // The models' numbers, in the file's order
@@ -127,6 +135,32 @@ export interface Structure {
   insertions: string[]
   altLocs: string[]
   tallies: Tallies
+  // The arrival it's a snapshot of, or null for a structure built whole
+  arrival: Arrival | null
+  // Whether all of it has arrived, as a structure built whole has
+  whole: boolean
+}
+
+// What a builder holds that's new since its last batch, in the rows the whole structure gives it: the atoms, residues,
+// runs and chains added, each column a copy of its new rows, each residue's first atom without the count after the
+// last; the atoms among them of another chemical form; the names each table gained; and the title, the models and the
+// tallies so far. The last batch alone has an end: every residue's secondary structure where the end of the file
+// changed a residue an earlier batch gave, and the tensors, which are joined to the atoms once the file is read
+export interface StructureBatch {
+  title: string
+  models: number[]
+  atoms: Atoms
+  residues: Residues
+  runs: Runs
+  chains: Pick<Chains, 'count' | 'name' | 'model'>
+  forms: Forms
+  elements: string[]
+  atomNames: string[]
+  residueNames: string[]
+  insertions: string[]
+  altLocs: string[]
+  tallies: Tallies
+  end: { structure: Uint8Array | null; tensors: Tensors | null } | null
 }
 
 // One atom as the builder takes it, with what its residue, run and chain are known by
@@ -156,6 +190,17 @@ export interface AtomRecord {
 // again, so that the copies a column is grown through add up to less than three times its final length
 const startingCapacity = 1024
 const growth = 1.5
+
+// How much room past what's expected of the whole a column that has to grow makes, as the expectation is an estimate
+const expectedMargin = 1.05
+
+// The room a column that's short grows to: a margin past what the whole is expected to hold, where that's more than it
+// needs, and otherwise half again as much as it had, at least what it needs, so that it grows once where the whole's
+// size is known and by few steps where it isn't
+export function roomToGrow(needed: number, expected: number, had: number) {
+  if (expected > needed) return Math.ceil(expected * expectedMargin)
+  return Math.max(needed, Math.ceil(had * growth))
+}
 
 // A residue has about eight atoms in a protein, and one in a water
 const atomsPerResidue = 8
@@ -196,12 +241,19 @@ class Names {
     }
     return place
   }
+
+  // Places names another table gained after the ones this one has, in their order
+  placeAll(names: readonly string[]) {
+    for (const name of names) this.place(name)
+  }
 }
 
-// Writes a structure's tables as its atoms come, in the file's order: it opens a residue where the model, the chain,
-// the label chain, the residue's number or its insertion code changes, and a run where the model, the chain or the
-// label chain does, and files each run under the chain of its model and name. Its columns grow as they fill and are
-// trimmed to their lengths when it finishes
+// Writes a structure's tables, in the file's order, either atom by atom or a batch at a time. Atom by atom, it opens a
+// residue where the model, the chain, the label chain, the residue's number or its insertion code changes, and a run
+// where the model, the chain or the label chain does, and files each run under the chain of its model and name; what
+// it holds can be taken from it in batches, each at a residue's start, and appended to another builder, which gives a
+// snapshot of what it holds after each. Its columns grow as they fill and are trimmed to their lengths when it
+// finishes
 export class StructureBuilder {
   private atomCapacity: number
   private atomRows = 0
@@ -232,6 +284,7 @@ export class StructureBuilder {
   private readonly chainModel: number[] = []
   private readonly chainRows = new Map<string, number>()
 
+  private tensors: Tensors | null = null
   private readonly tensorAtoms: number[] = []
   private readonly tensorValues: number[] = []
   private readonly formAtoms: number[] = []
@@ -261,6 +314,17 @@ export class StructureBuilder {
   private openInsertion = ''
   private openName = ''
   private finished = false
+
+  // How far the batches taken so far reach in each table, what's asked of the next residue's start, and whether the
+  // end of the file changed the secondary structure of a residue a batch already gave
+  private readonly taken = { atoms: 0, residues: 0, runs: 0, chains: 0, forms: 0, names: [0, 0, 0, 1, 1] }
+  private atResidue: (() => void) | null = null
+  private retold = false
+
+  // Appended to batch by batch: the arrival its snapshots share, the title so far, and whether the last has come
+  private arrival: Arrival | null = null
+  private title = ''
+  private whole = false
 
   // Room for a count of atoms, which it grows beyond as it must
   constructor(capacity = startingCapacity) {
@@ -296,6 +360,11 @@ export class StructureBuilder {
     return this.runChain.at(-1) ?? -1
   }
 
+  // How many residues the batches taken so far hold, every one of which has all its atoms
+  get residuesTaken() {
+    return this.taken.residues
+  }
+
   // Makes room for a count of atoms all told, where it has less, so that a structure whose size is learnt as it's read
   // grows once rather than by steps. A finished builder, whose columns are the structure's, takes no more
   reserve(capacity: number) {
@@ -305,19 +374,30 @@ export class StructureBuilder {
     if (residues > this.residueCapacity) this.growResidues(residues)
   }
 
+  // Has a handler called once, at the next residue's start, before its first atom goes in, where every atom added is
+  // in a residue that has all its atoms
+  callAtNextResidue(handler: () => void) {
+    this.atResidue = handler
+  }
+
   // Adds an atom after the last, and gives its row
   add(atom: AtomRecord): number {
     if (this.finished) throw new Error('The structure is already finished')
     const row = this.atomRows
+    const { model, chain, labelChain, residueNumber, insertion, residueName } = atom
+    const run = row === 0 || model !== this.openModel || chain !== this.openChain || labelChain !== this.openLabel
+    const residue = run || !Object.is(residueNumber, this.openNumber) || insertion !== this.openInsertion
+    if (residue && this.atResidue) {
+      const handler = this.atResidue
+      this.atResidue = null
+      handler()
+    }
     if (row === this.atomCapacity) this.growAtoms(Math.ceil(this.atomCapacity * growth))
 
-    const { model, chain, labelChain, residueNumber, insertion, residueName } = atom
     if (this.models.at(-1) !== model && !this.models.includes(model)) this.models.push(model)
-    const run = row === 0 || model !== this.openModel || chain !== this.openChain || labelChain !== this.openLabel
     if (run) this.openRun(model, chain, labelChain, row)
-    if (run || !Object.is(residueNumber, this.openNumber) || insertion !== this.openInsertion) {
-      this.openResidue(residueNumber, insertion, residueName, row)
-    } else if (residueName !== this.openName) {
+    if (residue) this.openResidue(residueNumber, insertion, residueName, row)
+    else if (residueName !== this.openName) {
       this.formAtoms.push(row)
       this.formNames.push(this.residueNames.place(residueName))
     }
@@ -343,7 +423,9 @@ export class StructureBuilder {
 
   // Sets a residue's secondary structure, which a residue starts without
   setSecondaryStructure(residue: number, structure: SecondaryStructure) {
-    this.residueStructure[residue] = secondaryStructures.indexOf(structure)
+    const index = secondaryStructures.indexOf(structure)
+    if (residue < this.taken.residues && this.residueStructure[residue] !== index) this.retold = true
+    this.residueStructure[residue] = index
   }
 
   // Gives an atom its anisotropic tensor, six values in the order Tensors keeps. Atoms are given theirs in the order of
@@ -357,25 +439,180 @@ export class StructureBuilder {
     for (let k = 0; k < 6; k++) this.tensorValues.push(u[k])
   }
 
+  // What's been added since the last batch, at a residue's start or once every atom is added. The last batch, taken
+  // once the file is read and its tensors joined, carries the end
+  takeBatch(title: string, last = false): StructureBatch {
+    const { taken } = this
+    const atoms = this.atomRows
+    const residues = this.residueRows
+    const runs = this.runChain.length
+    const chains = this.chainName.length
+    const from = taken.atoms
+    const fromResidue = taken.residues
+    const formFrom = taken.forms
+    const tables = [this.elements, this.atomNames, this.residueNames, this.insertions, this.altLocs]
+    const gained = tables.map((table, i) => table.table.slice(taken.names[i]))
+    const batch: StructureBatch = {
+      title,
+      models: [...this.models],
+      atoms: {
+        count: atoms - from,
+        positions: this.positions.slice(from * 3, atoms * 3),
+        element: this.element.slice(from, atoms),
+        bFactor: this.bFactor.slice(from, atoms),
+        occupancy: this.occupancy.slice(from, atoms),
+        flags: this.flags.slice(from, atoms),
+        altLoc: this.altLoc.slice(from, atoms),
+        name: this.atomName.slice(from, atoms),
+        residue: this.atomResidue.slice(from, atoms),
+      },
+      residues: {
+        count: residues - fromResidue,
+        run: this.residueRun.slice(fromResidue, residues),
+        number: this.residueNumber.slice(fromResidue, residues),
+        insertion: this.residueInsertion.slice(fromResidue, residues),
+        name: this.residueName.slice(fromResidue, residues),
+        structure: this.residueStructure.slice(fromResidue, residues),
+        firstAtom: this.residueFirstAtom.slice(fromResidue, residues),
+      },
+      runs: {
+        count: runs - taken.runs,
+        chain: Uint32Array.from(this.runChain.slice(taken.runs)),
+        label: this.runLabel.slice(taken.runs),
+        firstResidue: Uint32Array.from(this.runFirstResidue.slice(taken.runs)),
+        firstAtom: Uint32Array.from(this.runFirstAtom.slice(taken.runs)),
+      },
+      chains: {
+        count: chains - taken.chains,
+        name: this.chainName.slice(taken.chains),
+        model: Int32Array.from(this.chainModel.slice(taken.chains)),
+      },
+      forms: {
+        atoms: Uint32Array.from(this.formAtoms.slice(formFrom)),
+        names: Uint16Array.from(this.formNames.slice(formFrom)),
+      },
+      elements: gained[0],
+      atomNames: gained[1],
+      residueNames: gained[2],
+      insertions: gained[3],
+      altLocs: gained[4],
+      tallies: copyTallies(this.tallies),
+      end: last
+        ? { structure: this.retold ? this.residueStructure.slice(0, residues) : null, tensors: this.tensorsHeld() }
+        : null,
+    }
+    taken.atoms = atoms
+    taken.residues = residues
+    taken.runs = runs
+    taken.chains = chains
+    taken.forms = this.formAtoms.length
+    taken.names = tables.map((table) => table.table.length)
+    return batch
+  }
+
+  // Appends a batch taken from another builder, which takes the rows after this one's, growing the columns where
+  // they're short: to the atoms the whole is expected to hold where that's known, and otherwise by half again
+  append(batch: StructureBatch, expectedAtoms = 0) {
+    if (this.finished || this.whole) throw new Error('The structure is already whole')
+    this.arrival ??= { expectedAtoms }
+    this.arrival.expectedAtoms = Math.max(expectedAtoms, this.atomRows + batch.atoms.count)
+    const { atoms, residues, runs, chains, forms } = batch
+    const atomEnd = this.atomRows + atoms.count
+    if (atomEnd > this.atomCapacity) this.growAtoms(roomToGrow(atomEnd, expectedAtoms, this.atomCapacity))
+    const residueEnd = this.residueRows + residues.count
+    if (residueEnd > this.residueCapacity) {
+      const expectedResidues = Math.ceil((residueEnd * Math.max(expectedAtoms, atomEnd)) / Math.max(atomEnd, 1))
+      this.growResidues(roomToGrow(residueEnd, expectedResidues, this.residueCapacity))
+    }
+    const at = this.atomRows
+    this.positions.set(atoms.positions, at * 3)
+    this.element.set(atoms.element, at)
+    this.bFactor.set(atoms.bFactor, at)
+    this.occupancy.set(atoms.occupancy, at)
+    this.flags.set(atoms.flags, at)
+    this.altLoc.set(atoms.altLoc, at)
+    this.atomName.set(atoms.name, at)
+    this.atomResidue.set(atoms.residue, at)
+    const residueAt = this.residueRows
+    this.residueRun.set(residues.run, residueAt)
+    this.residueNumber.set(residues.number, residueAt)
+    this.residueInsertion.set(residues.insertion, residueAt)
+    this.residueName.set(residues.name, residueAt)
+    this.residueStructure.set(residues.structure, residueAt)
+    this.residueFirstAtom.set(residues.firstAtom, residueAt)
+    for (let run = 0; run < runs.count; run++) {
+      this.runChain.push(runs.chain[run])
+      this.runLabel.push(runs.label[run])
+      this.runFirstResidue.push(runs.firstResidue[run])
+      this.runFirstAtom.push(runs.firstAtom[run])
+    }
+    for (let chain = 0; chain < chains.count; chain++) {
+      this.chainRows.set(`${chains.model[chain]} ${chains.name[chain]}`, this.chainName.length)
+      this.chainName.push(chains.name[chain])
+      this.chainModel.push(chains.model[chain])
+    }
+    for (let k = 0; k < forms.atoms.length; k++) {
+      this.formAtoms.push(forms.atoms[k])
+      this.formNames.push(forms.names[k])
+    }
+    this.elements.placeAll(batch.elements)
+    this.atomNames.placeAll(batch.atomNames)
+    this.residueNames.placeAll(batch.residueNames)
+    this.insertions.placeAll(batch.insertions)
+    this.altLocs.placeAll(batch.altLocs)
+    this.models.splice(0, this.models.length, ...batch.models)
+    Object.assign(this.tallies, copyTallies(batch.tallies))
+    this.title = batch.title
+    this.atomRows = atomEnd
+    this.residueRows = residueEnd
+    if (batch.end) {
+      if (batch.end.structure) this.residueStructure = batch.end.structure
+      this.tensors = batch.end.tensors
+      this.whole = true
+    }
+  }
+
+  // The structure as it stands after the batches appended so far, its columns views of the builder's own, which
+  // later batches add rows after but never change within them, so that each snapshot stays as it was given
+  snapshot(): Structure {
+    const atoms = this.atomRows
+    const residues = this.residueRows
+    // The count after the last residue is the next one's first atom, which a later batch writes to the same place
+    this.residueFirstAtom[residues] = atoms
+    return {
+      ...this.tables(this.title),
+      atoms: {
+        count: atoms,
+        positions: this.positions.subarray(0, atoms * 3),
+        element: this.element.subarray(0, atoms),
+        bFactor: this.bFactor.subarray(0, atoms),
+        occupancy: this.occupancy.subarray(0, atoms),
+        flags: this.flags.subarray(0, atoms),
+        altLoc: this.altLoc.subarray(0, atoms),
+        name: this.atomName.subarray(0, atoms),
+        residue: this.atomResidue.subarray(0, atoms),
+      },
+      residues: {
+        count: residues,
+        run: this.residueRun.subarray(0, residues),
+        number: this.residueNumber.subarray(0, residues),
+        insertion: this.residueInsertion.subarray(0, residues),
+        name: this.residueName.subarray(0, residues),
+        structure: this.residueStructure.subarray(0, residues),
+        firstAtom: this.residueFirstAtom.subarray(0, residues + 1),
+      },
+      arrival: this.arrival,
+      whole: this.whole || this.arrival === null,
+    }
+  }
+
   // The structure, with every column trimmed to its length, one at a time, so that a large structure is held twice
   // over only a column at a time. The builder takes no more atoms after it
   finish(title = ''): Structure {
     this.finished = true
     const atoms = this.atomRows
     const residues = this.residueRows
-    const runs = this.runChain.length
-    const chains = this.chainName.length
     this.residueFirstAtom[residues] = atoms
-
-    // Each chain's runs, gathered in the file's order
-    const firstRun = new Uint32Array(chains + 1)
-    for (const chain of this.runChain) firstRun[chain + 1]++
-    for (let chain = 0; chain < chains; chain++) firstRun[chain + 1] += firstRun[chain]
-    const filled = firstRun.slice(0, chains)
-    const chainRuns = new Uint32Array(runs)
-    this.runChain.forEach((chain, run) => {
-      chainRuns[filled[chain]++] = run
-    })
 
     this.positions = this.positions.slice(0, atoms * 3)
     this.element = this.element.slice(0, atoms)
@@ -393,8 +630,7 @@ export class StructureBuilder {
     this.residueFirstAtom = this.residueFirstAtom.slice(0, residues + 1)
 
     return {
-      title,
-      models: this.models,
+      ...this.tables(title),
       atoms: {
         count: atoms,
         positions: this.positions,
@@ -415,33 +651,61 @@ export class StructureBuilder {
         structure: this.residueStructure,
         firstAtom: this.residueFirstAtom,
       },
+      arrival: null,
+      whole: true,
+    }
+  }
+
+  // Everything but the atoms' and the residues' columns, made afresh: the runs, each chain's runs gathered in the
+  // file's order, the tensors, the forms, the names and the tallies
+  private tables(title: string): Omit<Structure, 'atoms' | 'residues' | 'arrival' | 'whole'> {
+    const atoms = this.atomRows
+    const residues = this.residueRows
+    const runs = this.runChain.length
+    const chains = this.chainName.length
+    const firstRun = new Uint32Array(chains + 1)
+    for (const chain of this.runChain) firstRun[chain + 1]++
+    for (let chain = 0; chain < chains; chain++) firstRun[chain + 1] += firstRun[chain]
+    const filled = firstRun.slice(0, chains)
+    const chainRuns = new Uint32Array(runs)
+    this.runChain.forEach((chain, run) => {
+      chainRuns[filled[chain]++] = run
+    })
+    return {
+      title,
+      models: [...this.models],
       runs: {
         count: runs,
         chain: Uint32Array.from(this.runChain),
-        label: this.runLabel,
+        label: [...this.runLabel],
         firstResidue: Uint32Array.from([...this.runFirstResidue, residues]),
         firstAtom: Uint32Array.from([...this.runFirstAtom, atoms]),
       },
       chains: {
         count: chains,
-        name: this.chainName,
+        name: [...this.chainName],
         model: Int32Array.from(this.chainModel),
         runs: chainRuns,
         firstRun,
       },
-      tensors:
-        this.tensorAtoms.length > 0
-          ? { atoms: Uint32Array.from(this.tensorAtoms), values: Float32Array.from(this.tensorValues) }
-          : null,
+      tensors: this.tensorsHeld(),
       forms:
         this.formAtoms.length > 0 ? { atoms: Uint32Array.from(this.formAtoms), names: Uint16Array.from(this.formNames) } : null,
-      elements: this.elements.table,
-      atomNames: this.atomNames.table,
-      residueNames: this.residueNames.table,
-      insertions: this.insertions.table,
-      altLocs: this.altLocs.table,
-      tallies: this.tallies,
+      elements: [...this.elements.table],
+      atomNames: [...this.atomNames.table],
+      residueNames: [...this.residueNames.table],
+      insertions: [...this.insertions.table],
+      altLocs: [...this.altLocs.table],
+      tallies: copyTallies(this.tallies),
     }
+  }
+
+  // The tensors given atom by atom, or appended with the last batch
+  private tensorsHeld(): Tensors | null {
+    if (this.tensorAtoms.length > 0) {
+      return { atoms: Uint32Array.from(this.tensorAtoms), values: Float32Array.from(this.tensorValues) }
+    }
+    return this.tensors
   }
 
   private openRun(model: number, chain: string, labelChain: string, row: number) {
@@ -514,6 +778,11 @@ export class StructureBuilder {
     this.residueFirstAtom = resized(this.residueFirstAtom, capacity + 1, (length) => new Uint32Array(length))
     this.residueCapacity = capacity
   }
+}
+
+// A copy of tallies, which a batch and a snapshot each keep apart from the builder's own
+function copyTallies(tallies: Tallies): Tallies {
+  return { ...tallies, defaults: { ...tallies.defaults } }
 }
 
 // A structure with no atoms, which the page holds before an entry loads

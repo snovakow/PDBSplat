@@ -74,14 +74,15 @@ const color = new Color()
 // summed or glow; layered, only the nearest see-through surface shows, which no number of models adds to, so each
 // model's atoms stay whole. An atom in one of several conformations keeps its occupancy's share while they're all
 // drawn. Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn
-// whole. Opacity acts through the shading's uniform, so it isn't here
-export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint) {
+// whole. Opacity acts through the shading's uniform, so it isn't here. The shown atoms from one place up to another
+// may be painted alone, as an entry arriving in batches is
+export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint, from = 0, to = paint.shown.count) {
   const { shown, structure, colorBy, burial, buried, focus, picked, fade, model, modelCount, conformations, layered } = paint
   const colorOf = atomColoring(structure, shown, colorBy, burial, buried)
   const inFocus = focusTest(structure, focus, picked)
   const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
   const { altLoc, occupancy } = structure.atoms
-  for (let i = 0; i < shown.count; i++) {
+  for (let i = from; i < to; i++) {
     const atom = shown.rows[i]
     colorOf(atom, color)
     const focusShare = !inFocus || inFocus(atom) ? 1 : fade
@@ -120,6 +121,34 @@ export function paintMerged(
     const offset = group * bytesPerAtom
     const total = totals[group]
     for (let k = 0; k < bytesPerAtom; k++) bytes[offset + k] = sums[offset + k] / total
+  }
+}
+
+// Paints the groups that the members from one place up to another make up, every member of each among them, as
+// paintMerged paints them, which a merged level whose groups each lie in one stretch of members, as a residue's do,
+// is painted by a stretch at a time
+export function paintMergedRange(
+  bytes: Uint8ClampedArray,
+  source: Uint8ClampedArray,
+  groups: Uint32Array,
+  weights: ArrayLike<number>,
+  from: number,
+  to: number,
+) {
+  if (to <= from) return
+  const first = groups[from]
+  const count = groups[to - 1] + 1 - first
+  const sums = new Float64Array(count * bytesPerAtom)
+  const totals = new Float64Array(count)
+  for (let i = from; i < to; i++) {
+    const group = groups[i] - first
+    const weight = weights[i]
+    totals[group] += weight
+    for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source[i * bytesPerAtom + k]
+  }
+  for (let group = 0; group < count; group++) {
+    const offset = (first + group) * bytesPerAtom
+    for (let k = 0; k < bytesPerAtom; k++) bytes[offset + k] = sums[group * bytesPerAtom + k] / totals[group]
   }
 }
 

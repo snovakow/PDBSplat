@@ -14,6 +14,7 @@ import {
   type Structure,
 } from '../pdb/structure.ts'
 import type { ColorBy } from '../options.ts'
+import { lowerBound } from './pieces.ts'
 
 // The chain and rainbow colourings' saturation and lightness, in three's HSL over the working colour space
 const saturation = 0.75
@@ -121,9 +122,11 @@ function structureColor(structure: Structure, atom: number) {
 }
 
 // Each chain's colour, by its row. Chains take hues a golden angle apart, by name, in the order the shown atoms first
-// come to them, so neighbours differ and a chain keeps its hue in every model; the chains none of them reach come after
+// come to them, so neighbours differ and a chain keeps its hue in every model; the chains none of them reach come after.
+// Each chain's first shown atom is found by its runs' places in the shown list, which holds the atoms in the file's
+// order, so that a chain's hue never changes as more atoms arrive after it
 function chainColors(structure: Structure, shown: ShownAtoms) {
-  const { chains } = structure
+  const { chains, runs } = structure
   const hues = new Map<string, Color>()
   const hueOf = (name: string) => {
     let color = hues.get(name)
@@ -133,13 +136,17 @@ function chainColors(structure: Structure, shown: ShownAtoms) {
     }
     return color
   }
-  let last = -1
-  for (let i = 0; i < shown.count; i++) {
-    const chain = chainOf(structure, shown.rows[i])
-    if (chain === last) continue
-    last = chain
-    hueOf(chains.name[chain])
+  const rows = shown.rows.subarray(0, shown.count)
+  const firsts = new Float64Array(chains.count).fill(Infinity)
+  for (let run = 0; run < runs.count; run++) {
+    const at = lowerBound(rows, runs.firstAtom[run])
+    const chain = runs.chain[run]
+    if (at < rows.length && rows[at] < runs.firstAtom[run + 1]) firsts[chain] = Math.min(firsts[chain], at)
   }
+  const reached: number[] = []
+  for (let chain = 0; chain < chains.count; chain++) if (firsts[chain] < Infinity) reached.push(chain)
+  reached.sort((a, b) => firsts[a] - firsts[b])
+  for (const chain of reached) hueOf(chains.name[chain])
   return chains.name.map(hueOf)
 }
 
@@ -151,9 +158,15 @@ interface Spread {
 // Each entry's spread, kept beside its tables, which are never changed
 const spreads = new WeakMap<Structure, Spread>()
 
+// The spread of an entry still arriving, whose percentiles would shift as the rest came: none, so that every atom is
+// white until they're known
+const spreadToCome: Spread = { low: 0, high: 0 }
+
 // The low and high percentiles of the B-factors of the entry's atoms other than waters, whose B-factors run high.
-// They're taken from the atoms shown at the defaults, so that showing more models or conformations recolours none
+// They're taken from the atoms shown at the defaults, so that showing more models or conformations recolours none,
+// and once the entry has all arrived
 export function bFactorSpread(structure: Structure): Spread {
+  if (!structure.whole) return spreadToCome
   let spread = spreads.get(structure)
   if (!spread) {
     const { flags, bFactor } = structure.atoms
@@ -182,8 +195,10 @@ const rainbows = new WeakMap<Structure, Float64Array>()
 // Each residue's place along its chain, by its row, from 0 at the chain's first polymer residue to 1 at its last, or
 // NaN for a residue in no polymer. A chain's polymer residues, modified ones such as selenomethionine included, are
 // those shown at the defaults, in the file's order, and a residue of another model or conformation takes the place of
-// the one with its chain's name, its number and its insertion code, so it takes the same place in every model
-export function rainbowPositions(structure: Structure) {
+// the one with its chain's name, its number and its insertion code, so it takes the same place in every model. A
+// chain's length is known once the entry has all arrived, and until then there are no places, null
+export function rainbowPositions(structure: Structure): Float64Array | null {
+  if (!structure.whole) return null
   let positions = rainbows.get(structure)
   if (!positions) {
     const { atoms, residues, chains } = structure

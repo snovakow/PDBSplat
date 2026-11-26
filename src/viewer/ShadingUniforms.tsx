@@ -1,14 +1,10 @@
 import { useEffect } from 'react'
 import { useStore } from '../store.ts'
-import type { Bounds } from './bounds.ts'
-import { optionUniforms, structureRadius } from './shading.ts'
+import { optionUniforms } from './shading.ts'
 
-interface Props {
-  bounds: Bounds
-}
-
-// Copies the panel's shading options and the entry's radius into the shading's uniforms, in every style
-export function ShadingUniforms({ bounds }: Props) {
+// Copies the panel's shading options into the shading's uniforms, in every style. The entry's radius is the framing's
+// to set, as it eases
+export function ShadingUniforms() {
   useOptionUniform('opacity')
   useOptionUniform('hardness')
   useOptionUniform('shading')
@@ -16,10 +12,6 @@ export function ShadingUniforms({ bounds }: Props) {
   useOptionUniform('shininess')
   useOptionUniform('outline')
   useOptionUniform('depthCue')
-
-  useEffect(() => {
-    structureRadius.value = bounds.radius
-  }, [bounds])
 
   return null
 }

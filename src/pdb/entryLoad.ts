@@ -1,10 +1,12 @@
 // An entry loaded from the RCSB as it downloads: its file fetched gzipped, the compressed bytes counted as they come
-// for the progress, inflated and read a chunk at a time, and its residues and chains merged as they close. The fetch
-// is a plain GET, with no header but a simple range, so that the RCSB, which refuses the preflight any other request
-// would need, answers it from any page
-import { StreamMerge, type LoadChoice, type MergedLevels } from './merge.ts'
+// for the progress, inflated and read a chunk at a time, its residues and chains merged as they close, and what has
+// been read handed on in batches as it comes, each at a residue's start, with its bounds so far. The fetch is a plain
+// GET, with no header but a simple range, so that the RCSB, which refuses the preflight any other request would need,
+// answers it from any page
+import { measureBounds, RunningBounds, type StructureBounds } from './bounds.ts'
+import { StreamMerge, type LoadChoice, type MergedBatch, type MergedLevels } from './merge.ts'
 import { MmcifReader } from './mmcif.ts'
-import type { Structure } from './structure.ts'
+import { defaultAtoms, type ShownChoice, type Structure, type StructureBatch } from './structure.ts'
 
 // Where the RCSB's file server keeps every entry, which lets any site fetch its files
 const fileServer = 'https://files.rcsb.org/download/'
@@ -15,8 +17,15 @@ const fileServer = 'https://files.rcsb.org/download/'
 const bytesPerAtom = 102
 const inflation = 5
 
-// How often the progress is told, in milliseconds
+// How often the progress is told, and how often what has been read is handed on, in milliseconds
 const progressEvery = 100
+const batchEvery = 300
+
+// How many atoms a batch holds at least: the first, so that an entry of up to as many, every example among them, arrives
+// whole however slowly it downloads, and opens on its own framing, and a larger one is first framed on enough of it;
+// and each after it, so that where the file is read slowly the batches come less often rather than smaller, and what
+// each costs the page and the worker beside its atoms is spent less often
+export const batchAtoms = 1 << 16
 
 // How far the load has come: the compressed bytes received and the total, which is null where the file isn't sent
 // gzipped, as the fallback to the plain file isn't, and the atoms read
@@ -47,7 +56,28 @@ export interface LoadReport {
 export interface LoadResult {
   structure: Structure
   merged: MergedLevels
+  bounds: StructureBounds
   report: LoadReport
+}
+
+// What a load hands on as it reads: the structure's rows and the blobs merged since the batch before, the bounds of
+// the default atoms so far, how many atoms the whole entry is expected to hold, the progress, the serial of the
+// request to merge again that its blobs answer, if they're merged afresh for one, and on the last batch alone, whose
+// bounds are worked out exactly, what the load took
+export interface EntryBatch {
+  structure: StructureBatch
+  merged: MergedBatch
+  bounds: StructureBounds
+  expected: number
+  progress: LoadProgress
+  answers: number | null
+  report: LoadReport | null
+}
+
+// A request to merge the levels again under another choice, which the load takes at its next batch
+export interface MergeRequest {
+  serial: number
+  choice: ShownChoice
 }
 
 // A load's failure, with its message as the page shows it
@@ -57,6 +87,13 @@ export interface LoadOptions {
   // The fetch to use, the page's own or a test's
   fetch: typeof fetch
   onProgress?: (progress: LoadProgress) => void
+  // Where what has been read is handed on, a batch at a time, the last once the file is read; without it the load
+  // gives the structure whole at the end alone
+  onBatch?: (batch: EntryBatch) => void
+  // A request to merge again, which the load answers at its next batch and then clears
+  requests?: { pending: MergeRequest | null }
+  // How many atoms a batch holds at least, batchAtoms unless a test asks for fewer
+  leastBatch?: number
   now?: () => number
 }
 
@@ -122,6 +159,8 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
   const merge = new StreamMerge(choice)
   let sizing: Sizing = total === null ? 'none' : 'estimate'
   let trailerAtoms: number | null = null
+  // The bytes the whole file inflates to, once the trailer has given them
+  let inflatedTotal: number | null = null
   const reader = new MmcifReader({
     capacity: () => trailerAtoms ?? (total === null ? undefined : atomsIn(total * inflation)),
     onAtom: merge,
@@ -136,6 +175,7 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
         return
       }
       trailer = `${answer} bytes inflated`
+      inflatedTotal = answer
       trailerAtoms = atomsIn(answer)
       sizing = reader.atomsStarted ? 'late trailer' : 'trailer'
       reader.reserve(trailerAtoms)
@@ -184,7 +224,58 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
   let inflatedBytes = 0
   let reading = 0
   let told = -Infinity
-  const tell = () => options.onProgress?.({ received: gzipped ? received : inflatedBytes, total, atoms: reader.atomCount })
+  const progressNow = (): LoadProgress => ({ received: gzipped ? received : inflatedBytes, total, atoms: reader.atomCount })
+  const tell = () => options.onProgress?.(progressNow())
+
+  // How many atoms the whole entry is expected to hold: the atoms read so far, in the share of the atom table's bytes
+  // read so far, against the bytes the whole file inflates to, as the trailer gives them; until it does, no fewer than
+  // the compressed size gives, as what's been inflated so far lags what's been received
+  let tableStart = -1
+  const expectedAtoms = () => {
+    const atoms = reader.atomCount
+    if (read || total === null || tableStart < 0) return atoms
+    const estimate = inflatedTotal === null ? atomsIn(total * inflation) : 0
+    const whole = inflatedTotal ?? total * inflation
+    const tableRead = inflatedBytes - tableStart
+    if (tableRead <= 0 || whole <= inflatedBytes) return Math.max(atoms, estimate)
+    return Math.max(atoms, estimate, Math.round((atoms * (whole - tableStart)) / tableRead))
+  }
+
+  // What has been read is handed on at a residue's start once a batch is due, and the last batch once the file ends,
+  // with the bounds so far and the levels merged again where that was asked for
+  const { onBatch } = options
+  const requests = options.requests ?? { pending: null }
+  const bounds = new RunningBounds()
+  let boundsTaken = 0
+  let lastBatch = start
+  let batchAsked = false
+  const hand = (structureBatch: StructureBatch, last: { bounds: StructureBounds; report: LoadReport } | null) => {
+    if (!onBatch) return
+    const places = reader.places()
+    if (!places) return
+    bounds.add(places, boundsTaken, places.atoms.count)
+    boundsTaken = places.atoms.count
+    let answers: number | null = null
+    if (requests.pending) {
+      merge.rechoose(requests.pending.choice, places)
+      answers = requests.pending.serial
+      requests.pending = null
+    }
+    onBatch({
+      structure: structureBatch,
+      merged: merge.take(),
+      bounds: last?.bounds ?? bounds.bounds(places),
+      expected: expectedAtoms(),
+      progress: progressNow(),
+      answers,
+      report: last?.report ?? null,
+    })
+  }
+  const batchAtNextResidue = () => {
+    batchAsked = false
+    lastBatch = now()
+    hand(reader.takeBatch(), null)
+  }
   for (;;) {
     let chunk: ReadableStreamReadResult<Uint8Array>
     try {
@@ -206,16 +297,24 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
     }
     const after = now()
     reading += after - before
+    if (tableStart < 0 && reader.atomsStarted) tableStart = inflatedBytes - chunk.value.length
     if (after - told >= progressEvery) {
       told = after
       tell()
+    }
+    const batchDue = after - lastBatch >= batchEvery && reader.atomCount - boundsTaken >= (options.leastBatch ?? batchAtoms)
+    if (onBatch && !batchAsked && reader.atomsStarted && (batchDue || (requests.pending && boundsTaken > 0))) {
+      batchAsked = true
+      reader.callAtNextResidue(batchAtNextResidue)
     }
   }
   read = true
   tell()
 
   let structure: Structure
+  let lastBatchRead: StructureBatch | null = null
   try {
+    if (onBatch) lastBatchRead = reader.takeLastBatch()
     structure = reader.finish()
   } catch (error) {
     throw unreadable(error)
@@ -230,5 +329,8 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
     readMilliseconds: reading,
     milliseconds: now() - start,
   }
-  return { structure, merged: merge.finish(), report }
+  // The exact bounds, of the whole structure's default atoms
+  const exact = measureBounds(structure, defaultAtoms(structure))
+  if (lastBatchRead) hand(lastBatchRead, { bounds: exact, report })
+  return { structure, merged: merge.finish(), bounds: exact, report }
 }

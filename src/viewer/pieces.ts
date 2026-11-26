@@ -23,6 +23,14 @@ export interface PieceSpans {
   sizes: Uint32Array
 }
 
+// The spans of no pieces, which content has before anything has arrived
+export const noPieces: PieceSpans = {
+  first: new Uint32Array(1),
+  start: new Uint32Array(0),
+  end: new Uint32Array(0),
+  sizes: new Uint32Array(0),
+}
+
 // Builds spans piece by piece, each new stretch joining the piece's last one where the two overlap or touch
 class SpanBuilder {
   private readonly first: Uint32Array
@@ -63,7 +71,7 @@ class SpanBuilder {
 }
 
 // The first place in a sorted list holding a value at or above a bound
-function lowerBound(sorted: Uint32Array, bound: number) {
+export function lowerBound(sorted: Uint32Array, bound: number) {
   let low = 0
   let high = sorted.length
   while (low < high) {
@@ -111,6 +119,27 @@ export interface DrawnInstances {
   covariances: Float32Array
 }
 
+// A level as its piece's sphere reads it: its spans, and each instance's centre and how far its ellipsoid reaches
+// from it, which a level whose instances' shapes aren't kept works out as it's asked
+export interface DrawnLevel {
+  spans: PieceSpans
+  centreOf: (instance: number, centre: Float64Array) => void
+  extentOf: (instance: number) => number
+}
+
+// A level whose centres and covariances are kept, as its sphere reads it
+export function keptLevel({ spans, centers, covariances }: DrawnInstances): DrawnLevel {
+  return {
+    spans,
+    centreOf: (i, centre) => {
+      centre[0] = centers[i * 3]
+      centre[1] = centers[i * 3 + 1]
+      centre[2] = centers[i * 3 + 2]
+    },
+    extentOf: (i) => ellipsoidExtent(covariances, i * 6),
+  }
+}
+
 // The floats of a sphere: its centre's x, y and z, and its radius
 export const sphereSize = 4
 
@@ -118,53 +147,73 @@ export const sphereSize = 4
 // that touches the sphere just outside it, for the cull or the pick
 const sphereSlack = 1e-6
 
-// The spheres around the pieces, in the structure's own space: each about the middle of the box around its first
-// level's centres, out to the farthest any instance of any level given reaches from it, or a radius below 0 for a
-// piece that draws nothing
+// An instance's centre, as a sphere reads it
+const centre = new Float64Array(3)
+
+// Writes the sphere around a piece, in the structure's own space, into the spheres at its place: about the middle of
+// the box around its first level's centres, out to the farthest any instance of any level given reaches from it, or a
+// radius below 0 for a piece that draws nothing
+export function pieceSphere(drawn: readonly DrawnLevel[], piece: number, spheres: Float64Array) {
+  const at = piece * sphereSize
+  const { spans } = drawn[0]
+  if (spans.sizes[piece] === 0) {
+    spheres[at + 3] = -1
+    return
+  }
+  let lowX = Infinity
+  let lowY = Infinity
+  let lowZ = Infinity
+  let highX = -Infinity
+  let highY = -Infinity
+  let highZ = -Infinity
+  for (let s = spans.first[piece]; s < spans.first[piece + 1]; s++) {
+    for (let i = spans.start[s]; i < spans.end[s]; i++) {
+      drawn[0].centreOf(i, centre)
+      lowX = Math.min(lowX, centre[0])
+      lowY = Math.min(lowY, centre[1])
+      lowZ = Math.min(lowZ, centre[2])
+      highX = Math.max(highX, centre[0])
+      highY = Math.max(highY, centre[1])
+      highZ = Math.max(highZ, centre[2])
+    }
+  }
+  spheres[at] = (lowX + highX) / 2
+  spheres[at + 1] = (lowY + highY) / 2
+  spheres[at + 2] = (lowZ + highZ) / 2
+  let radius = 0
+  for (const level of drawn) {
+    const owned = level.spans
+    for (let s = owned.first[piece]; s < owned.first[piece + 1]; s++) {
+      for (let i = owned.start[s]; i < owned.end[s]; i++) {
+        level.centreOf(i, centre)
+        const x = centre[0] - spheres[at]
+        const y = centre[1] - spheres[at + 1]
+        const z = centre[2] - spheres[at + 2]
+        radius = Math.max(radius, Math.hypot(x, y, z) + level.extentOf(i))
+      }
+    }
+  }
+  spheres[at + 3] = radius * (1 + sphereSlack) + sphereSlack
+}
+
+// The spheres around every piece, each as pieceSphere writes it, from levels whose centres and covariances are kept
 export function pieceSpheres(drawn: readonly DrawnInstances[]): Float64Array {
   const count = drawn[0].spans.sizes.length
   const spheres = new Float64Array(count * sphereSize)
-  const { spans, centers } = drawn[0]
-  for (let piece = 0; piece < count; piece++) {
-    const at = piece * sphereSize
-    if (spans.sizes[piece] === 0) {
-      spheres[at + 3] = -1
-      continue
-    }
-    let lowX = Infinity
-    let lowY = Infinity
-    let lowZ = Infinity
-    let highX = -Infinity
-    let highY = -Infinity
-    let highZ = -Infinity
-    for (let s = spans.first[piece]; s < spans.first[piece + 1]; s++) {
-      for (let i = spans.start[s]; i < spans.end[s]; i++) {
-        lowX = Math.min(lowX, centers[i * 3])
-        lowY = Math.min(lowY, centers[i * 3 + 1])
-        lowZ = Math.min(lowZ, centers[i * 3 + 2])
-        highX = Math.max(highX, centers[i * 3])
-        highY = Math.max(highY, centers[i * 3 + 1])
-        highZ = Math.max(highZ, centers[i * 3 + 2])
-      }
-    }
-    spheres[at] = (lowX + highX) / 2
-    spheres[at + 1] = (lowY + highY) / 2
-    spheres[at + 2] = (lowZ + highZ) / 2
-    let radius = 0
-    for (const level of drawn) {
-      const { spans: owned, centers: levelCenters, covariances } = level
-      for (let s = owned.first[piece]; s < owned.first[piece + 1]; s++) {
-        for (let i = owned.start[s]; i < owned.end[s]; i++) {
-          const x = levelCenters[i * 3] - spheres[at]
-          const y = levelCenters[i * 3 + 1] - spheres[at + 1]
-          const z = levelCenters[i * 3 + 2] - spheres[at + 2]
-          radius = Math.max(radius, Math.hypot(x, y, z) + ellipsoidExtent(covariances, i * 6))
-        }
-      }
-    }
-    spheres[at + 3] = radius * (1 + sphereSlack) + sphereSlack
-  }
+  const levels = drawn.map(keptLevel)
+  for (let piece = 0; piece < count; piece++) pieceSphere(levels, piece, spheres)
   return spheres
+}
+
+// How far from a point anything a piece draws reaches, at most: the farthest any piece's sphere does
+export function spheresReach(spheres: Float64Array, count: number, x: number, y: number, z: number) {
+  let reach = 0
+  for (let piece = noPiece + 1; piece < count; piece++) {
+    const at = piece * sphereSize
+    if (spheres[at + 3] < 0) continue
+    reach = Math.max(reach, Math.hypot(spheres[at] - x, spheres[at + 1] - y, spheres[at + 2] - z) + spheres[at + 3])
+  }
+  return reach
 }
 
 // How far past the view's edges a piece is still taken as in view, as a share of the view's half-width and
@@ -220,14 +269,19 @@ const texelSize = 4
 export class PieceTable {
   readonly texture: DataArrayTexture
   readonly values: Float32Array
+  // How many pieces it has a texel for
+  readonly capacity: number
   // Whether the texture has been sent whole once, before which a change of some layers alone would send only those
   // and leave the rest unset on the GPU
   private sent = false
   private changed = false
 
-  constructor(count: number) {
+  // A table for a count of pieces, all hidden, or holding the values of a smaller one it takes the place of
+  constructor(count: number, from?: PieceTable) {
     const layers = Math.max(1, Math.ceil(count / texelsPerLayer))
+    this.capacity = layers * texelsPerLayer
     this.values = new Float32Array(layers * texelsPerLayer * texelSize).fill(hiddenTexel)
+    if (from) this.values.set(from.values)
     // The values are read by texel, so they take no filtering and no mipmaps
     const texture = new DataArrayTexture(this.values, tableSide, tableSide, layers)
     texture.format = RGBAFormat

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { gzipSync } from 'node:zlib'
-import { atomsIn, inflatedSize, LoadError, loadEntry, type LoadProgress } from '../src/pdb/entryLoad.ts'
+import { measureBounds } from '../src/pdb/bounds.ts'
+import { atomsIn, inflatedSize, LoadError, loadEntry, type EntryBatch, type LoadProgress } from '../src/pdb/entryLoad.ts'
 import { buffersOf } from '../src/pdb/entryWorker.ts'
+import { MergedGrowth, mergeLevels } from '../src/pdb/merge.ts'
 import { parseMmcif } from '../src/pdb/mmcif.ts'
+import { defaultAtoms, StructureBuilder, type Structure } from '../src/pdb/structure.ts'
 
 // The load as a worker runs it, against a file server of its own that answers as the RCSB's does: the gzipped file
 // with its length, its last four bytes by a range, the plain file where there's no gzipped one, and the failures
@@ -201,4 +204,93 @@ void test('a missing entry, a failed request, no network, a broken download and 
   await failure({ gz: plain }, /^Couldn't read 1ABC's mmCIF file: /)
   const noAtoms = new Uint8Array(gzipSync(new TextEncoder().encode('data_1ABC\n_struct.title x\n')))
   await failure({ gz: noAtoms }, "Couldn't read 1ABC's mmCIF file: The file has no atom table")
+})
+
+// The structure's tables but for its arrival, which one appended from batches has and one read whole hasn't
+const tableKeys = ['title', 'models', 'atoms', 'residues', 'runs', 'chains', 'tensors', 'forms', 'elements', 'atomNames', 'residueNames', 'insertions', 'altLocs', 'tallies'] as const
+function sameTables(a: Structure, b: Structure, label: string) {
+  for (const key of tableKeys) assert.deepEqual(a[key], b[key], `${label}: ${key}`)
+}
+
+void test('an entry is handed on in batches, each at a residue start, which append to the structure read whole', async () => {
+  const whole = parseMmcif(text)
+  const exact = measureBounds(whole, defaultAtoms(whole))
+  // A clock that makes every chunk's batch due, one that makes a few due, and one that leaves the last batch alone
+  for (const step of [400, 40, 0]) {
+    const { get } = serve({ gz: gzipped })
+    let clock = 0
+    const batches: EntryBatch[] = []
+    const result = await loadEntry('1ABC', choice, {
+      fetch: get,
+      now: () => (clock += step),
+      leastBatch: 0,
+      onBatch: (batch) => batches.push(structuredClone(batch)),
+    })
+    const builder = new StructureBuilder(1)
+    const growth = new MergedGrowth()
+    for (const batch of batches) {
+      builder.append(batch.structure, batch.expected)
+      growth.append(batch.merged, 0)
+      const snapshot = builder.snapshot()
+      // Every batch's bounds are those of the default atoms so far, the angle within rounding, and the last's the
+      // whole's, exactly
+      const arrived = measureBounds(snapshot, defaultAtoms(snapshot))
+      assert.deepEqual(batch.bounds.center, arrived.center, `${step}`)
+      if (batch.report) assert.equal(batch.bounds.radius, arrived.radius, `${step}`)
+      else assert.ok(batch.bounds.radius >= arrived.radius && batch.bounds.radius <= arrived.radius * (1 + 1e-8), `${step}`)
+      assert.ok(Math.abs(batch.bounds.broadside - arrived.broadside) < 1e-9, `${step}`)
+    }
+    assert.ok(step === 0 ? batches.length === 1 : batches.length > 1, `${step}: ${batches.length} batches`)
+    sameTables(builder.snapshot(), whole, `${step}`)
+    assert.deepEqual(result.structure, whole)
+    assert.deepEqual(batches.at(-1)?.bounds, exact)
+    assert.deepEqual(result.bounds, exact)
+    // The last batch alone says what the load took
+    assert.deepEqual(batches.map((batch) => batch.report !== null), batches.map((_, i) => i === batches.length - 1))
+    const merged = growth.snapshot()
+    const reference = mergeLevels(whole, { hydrogens: false, waters: false, conformations: 'first', model: 1 })
+    assert.equal(merged?.residues.count, reference.residues.count)
+    assert.deepEqual(merged?.residues.centers, reference.residues.centers)
+    assert.deepEqual(merged?.residues.scatters, reference.residues.scatters)
+    assert.deepEqual(merged?.chains, reference.chains)
+  }
+})
+
+void test('a request to merge again while the entry is read is answered by the next batch, the levels merged afresh', async () => {
+  const whole = parseMmcif(text)
+  const { get } = serve({ gz: gzipped })
+  let clock = 0
+  const batches: EntryBatch[] = []
+  const requests: { pending: { serial: number; choice: { hydrogens: boolean; waters: boolean; conformations: 'first' | 'all'; model: number | null } } | null } = { pending: null }
+  const asked = { hydrogens: true, waters: true, conformations: 'all', model: null } as const
+  await loadEntry('1ABC', choice, {
+    fetch: get,
+    now: () => (clock += 400),
+    leastBatch: 0,
+    requests,
+    onBatch: (batch) => {
+      batches.push(structuredClone(batch))
+      if (batches.length === 3) requests.pending = { serial: 7, choice: asked }
+    },
+  })
+  assert.ok(batches.length > 4)
+  assert.deepEqual(batches.map((batch) => batch.answers), batches.map((_, i) => (i === 3 ? 7 : null)))
+  assert.deepEqual(batches.map((batch) => batch.merged.reset), batches.map((_, i) => i === 0 || i === 3))
+  const growth = new MergedGrowth()
+  for (const batch of batches) growth.append(batch.merged, 0)
+  const merged = growth.snapshot()
+  assert.deepEqual(merged?.choice, asked)
+  const reference = mergeLevels(whole, asked)
+  assert.deepEqual(merged?.residues.centers, reference.residues.centers)
+  assert.deepEqual(merged?.chains, reference.chains)
+})
+
+void test('an entry of fewer atoms than a batch holds arrives in one batch, however slowly it comes', async () => {
+  const { get } = serve({ gz: gzipped })
+  let clock = 0
+  const batches: EntryBatch[] = []
+  await loadEntry('1ABC', choice, { fetch: get, now: () => (clock += 400), onBatch: (batch) => batches.push(batch) })
+  assert.equal(batches.length, 1)
+  assert.ok(batches[0].report)
+  assert.equal(batches[0].structure.atoms.count, 400)
 })

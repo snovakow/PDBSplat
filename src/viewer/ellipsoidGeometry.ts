@@ -182,9 +182,9 @@ export class Pool {
   extent = 0
 
   // Each piece's first slot, or -1 while it holds none, how many it holds, and the last frame it was seen in
-  private readonly first: Int32Array
-  private readonly held: Uint32Array
-  private readonly seen: Float64Array
+  private first: Int32Array
+  private held: Uint32Array
+  private seen: Float64Array
   // The stretches of free slots below the extent, sorted and apart, as starts and ends
   private readonly freeStarts: number[] = []
   private readonly freeEnds: number[] = []
@@ -220,6 +220,20 @@ export class Pool {
     this.shapesWritten = new WrittenSlots(shapes, shapeSize)
     this.paintWritten = new WrittenSlots(paint, paintSize)
     this.piecesWritten = new WrittenSlots(pieces, 1)
+  }
+
+  // Makes room for pieces numbered below a count, where it has less, as an entry still arriving gains chains
+  reservePieces(count: number) {
+    if (count <= this.first.length) return
+    const first = new Int32Array(count).fill(-1)
+    first.set(this.first)
+    this.first = first
+    const held = new Uint32Array(count)
+    held.set(this.held)
+    this.held = held
+    const seen = new Float64Array(count).fill(-Infinity)
+    seen.set(this.seen)
+    this.seen = seen
   }
 
   // A piece's first slot, or -1 while it holds none

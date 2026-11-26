@@ -1,13 +1,16 @@
 import { burialSteps } from './burial.ts'
-import { LoadError, loadEntry } from './entryLoad.ts'
+import { LoadError, loadEntry, type MergeRequest } from './entryLoad.ts'
 import { buffersOf, type EntryReply, type EntryRequest } from './entryWorker.ts'
 import { mergeLevels } from './merge.ts'
-import { copyPlaces, type AtomPlaces } from './structure.ts'
+import type { AtomPlaces, ShownChoice, Structure } from './structure.ts'
 
-// Loads one entry, or holds one handed to it, and answers for it: the structure, whole, sent with its arrays
-// transferred, then its burial, worked out a stretch at a time so that a request to merge again is answered between
-// stretches. It keeps a copy of the columns that place the atoms, since the structure's own go with it
+// Loads one entry, or holds one handed to it, and answers for it: what it reads, in batches, each sent with its
+// arrays transferred, then its burial, worked out a stretch at a time so that a request to merge again is answered
+// between stretches. It keeps the columns of the structure it read that place the atoms, which no batch took, as each
+// sent a copy of its rows
 let places: AtomPlaces | null = null
+// While it reads, the request to merge again that its next batch answers
+let requests: { pending: MergeRequest | null } | null = null
 
 const post = (reply: EntryReply, transfer: ArrayBuffer[] = []) => self.postMessage(reply, { transfer })
 
@@ -17,26 +20,44 @@ self.onmessage = (event: MessageEvent<EntryRequest>) => {
   else if (request.kind === 'hold') {
     places = request.places
     if (request.burial) void bury()
-  } else if (places) {
-    const merged = mergeLevels(places, request.choice)
-    post({ kind: 'merged', serial: request.serial, merged }, buffersOf(merged))
-  }
+  } else if (places) answer(request.serial, request.choice)
+  else if (requests) requests.pending = { serial: request.serial, choice: request.choice }
+}
+
+function answer(serial: number, choice: ShownChoice) {
+  if (!places) return
+  const merged = mergeLevels(places, choice)
+  post({ kind: 'merged', serial, merged }, buffersOf(merged))
 }
 
 async function load(id: string, choice: Extract<EntryRequest, { kind: 'load' }>['choice']) {
+  const asked: { pending: MergeRequest | null } = { pending: null }
+  requests = asked
   try {
     const result = await loadEntry(id, choice, {
       fetch: (input, init) => fetch(input, init),
       onProgress: (progress) => post({ kind: 'progress', progress }),
+      onBatch: (batch) => post({ kind: 'batch', batch }, buffersOf(batch)),
+      requests: asked,
     })
-    places = copyPlaces(result.structure)
-    post({ kind: 'structure', ...result }, buffersOf([result.structure, result.merged]))
+    places = placesOf(result.structure)
   } catch (error) {
     const message = error instanceof LoadError ? error.message : `Couldn't load ${id}: ${String(error)}`
     post({ kind: 'failed', message })
     return
+  } finally {
+    requests = null
   }
+  // A request that came once the last batch had gone is answered as any later one is
+  const pending: MergeRequest | null = asked.pending
+  if (pending) answer(pending.serial, pending.choice)
   await bury()
+}
+
+// The columns of a structure that place its atoms, kept without the rest
+function placesOf({ models, elements, atoms, residues, runs, chains }: Structure): AtomPlaces {
+  const { count, positions, element, flags, residue } = atoms
+  return { models, elements, atoms: { count, positions, element, flags, residue }, residues, runs, chains }
 }
 
 async function bury() {

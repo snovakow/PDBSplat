@@ -3,7 +3,13 @@
 // a chunk at a time, so that an entry is read as it downloads and its text is never held whole
 
 import { CifTokenizer, decodeText, isPlainWhole, isUnknown, readNumber, type TokenSink } from './cifBytes.ts'
-import { StructureBuilder, type AtomRecord, type SecondaryStructure, type Structure } from './structure.ts'
+import {
+  StructureBuilder,
+  type AtomRecord,
+  type SecondaryStructure,
+  type Structure,
+  type StructureBatch,
+} from './structure.ts'
 
 const waterNames = new Set(['HOH', 'WAT', 'H2O', 'DOD'])
 
@@ -198,9 +204,12 @@ export class MmcifReader implements TokenSink {
   private readonly onAtom: AtomVisitor | undefined
   private readonly capacity: () => number | undefined
   private mode = topLevel
-  private title = ''
+  private titleText = ''
+  private completed: AtomSite | null = null
   private table: AtomSite | null = null
   private readonly ranges: Range[] = []
+  // The ranges read so far by their chains, made again only as more are read
+  private rangesByChain = { count: 0, byChain: new Map<string, Range[]>() }
   // Each anisotropic tensor by its atom's id, which the atoms are joined to once the file is read, so either table may
   // come first
   private readonly tensors = new Map<AtomId, Float32Array>()
@@ -284,7 +293,7 @@ export class MmcifReader implements TokenSink {
           this.mode = topLevel
           if (endsValues(bytes, start, end, isQuoted)) continue
           const { tag } = this
-          if (tag === '_struct.title') this.title = isUnknown(bytes, start, end, isQuoted) ? '' : decodeText(bytes, start, end)
+          if (tag === '_struct.title') this.titleText = isUnknown(bytes, start, end, isQuoted) ? '' : decodeText(bytes, start, end)
           const pairs = this.single.get(singleCategories.find((prefix) => tag.startsWith(prefix)) ?? '')
           if (pairs) {
             pairs.columns.push(tag)
@@ -296,8 +305,48 @@ export class MmcifReader implements TokenSink {
     }
   }
 
+  // The title as read so far, its spaces made single
+  get title(): string {
+    return this.titleText.trim().replace(/\s+/g, ' ')
+  }
+
+  // Has a handler called once, at the next residue's start in the atom table, where every atom read so far is in a
+  // residue that has all its atoms. Before the atom table starts there's nothing to call it for
+  callAtNextResidue(handler: () => void) {
+    ;(this.atoms ?? this.table)?.builder.callAtNextResidue(handler)
+  }
+
+  // The structure read so far, its columns views of the atom table's own, or null before it starts
+  places(): Structure | null {
+    return (this.atoms ?? this.table)?.builder.snapshot() ?? null
+  }
+
+  // What's been read since the last batch, called at a residue's start, with the secondary structure of the residues
+  // it holds as the ranges read so far give it
+  takeBatch(): StructureBatch {
+    const site = this.atoms ?? this.table
+    if (!site) throw new Error('The file has no atom table')
+    if (this.rangesByChain.count !== this.ranges.length) this.rangesByChain = { count: this.ranges.length, byChain: byChain(this.ranges) }
+    resolveStructures(site, this.rangesByChain.byChain, site.builder.residuesTaken)
+    return site.builder.takeBatch(this.title)
+  }
+
+  // The last batch, once the file has ended: what's been read since the batch before, with every residue's secondary
+  // structure where the ranges read since changed any of an earlier batch's, and the tensors
+  takeLastBatch(): StructureBatch {
+    const table = this.complete()
+    return table.builder.takeBatch(this.title, true)
+  }
+
   // The structure, once the file has ended
   finish(): Structure {
+    return this.complete().builder.finish(this.title)
+  }
+
+  // Ends the file, once: the last loop closed, the tables written a tag and value per column read, and the secondary
+  // structure and the tensors given to the atoms
+  private complete(): AtomSite {
+    if (this.completed) return this.completed
     this.tokens.end()
     if (this.mode === loopTags) this.openLoop()
     if (this.mode === loopValues) this.closeLoop()
@@ -308,9 +357,10 @@ export class MmcifReader implements TokenSink {
       if (category === anisotropCategory) anisotropReader(columns, tensors).read(row)
       else rangeReader(columns, category, ranges).read(row)
     }
-    resolveStructures(table, ranges)
+    resolveStructures(table, byChain(ranges), 0)
     joinTensors(table, tensors)
-    return table.builder.finish(this.title.trim().replace(/\s+/g, ' '))
+    this.completed = table
+    return table
   }
 
   // Starts reading a loop's values by its tags, with a reader for the tables read and none for the rest
@@ -543,20 +593,26 @@ function confStructure(type: string): SecondaryStructure {
 // Where ranges overlap, a strand outranks a helix, and either a turn
 const structureRank: Record<SecondaryStructure, number> = { none: 0, turn: 1, helix: 2, strand: 3 }
 
-// Gives each residue that lies in a range that range's structure, matched by the chain's label and the residue's place
-// in its sequence. Residues follow one another along their chains, so each run of residues at one place is searched once
-function resolveStructures({ builder, labelChains, labelPlaces }: AtomSite, ranges: Range[]) {
-  if (ranges.length === 0) return
+// The ranges by their chains' labels
+function byChain(ranges: Range[]) {
   const chainRanges = new Map<string, Range[]>()
   for (const range of ranges) {
     const listed = chainRanges.get(range.chain)
     if (listed) listed.push(range)
     else chainRanges.set(range.chain, [range])
   }
+  return chainRanges
+}
+
+// Gives each residue that lies in a range that range's structure, matched by the chain's label and the residue's place
+// in its sequence. Residues follow one another along their chains, so each run of residues at one place is searched once
+function resolveStructures({ builder, labelChains, labelPlaces }: AtomSite, chainRanges: Map<string, Range[]>, from: number) {
+  if (chainRanges.size === 0) return
   let chain: string | null = null
   let place = NaN
   let structure: SecondaryStructure = 'none'
-  labelChains.forEach((label, residue) => {
+  for (let residue = from; residue < labelChains.length; residue++) {
+    const label = labelChains[residue]
     if (label !== chain || !Object.is(labelPlaces[residue], place)) {
       chain = label
       place = labelPlaces[residue]
@@ -568,7 +624,7 @@ function resolveStructures({ builder, labelChains, labelPlaces }: AtomSite, rang
       }
     }
     if (structure !== 'none') builder.setSecondaryStructure(residue, structure)
-  })
+  }
 }
 
 // type_symbol is usually upper case, such as FE; elements read as Fe

@@ -279,3 +279,131 @@ void test('a choice shows atoms by their flags and model, and two choices are th
   assert.equal(sameChoice(choice, { ...choice }), true)
   assert.equal(sameChoice(choice, { ...choice, model: null }), false)
 })
+
+// The structure's tables but for its arrival, which a structure appended from batches has and one built whole hasn't
+const tableKeys = [
+  'title',
+  'models',
+  'atoms',
+  'residues',
+  'runs',
+  'chains',
+  'tensors',
+  'forms',
+  'elements',
+  'atomNames',
+  'residueNames',
+  'insertions',
+  'altLocs',
+  'tallies',
+] as const
+
+// About 2,500 atoms: three chains of residues of eight atoms, one with an insertion code and one in two chemical forms,
+// a ligand and waters that come after every chain's polymer, alternates, hydrogens, and a second model
+function arrivingAtoms(): Partial<AtomRecord>[] {
+  const atoms: Partial<AtomRecord>[] = []
+  for (const chain of ['A', 'B', 'C']) {
+    for (let residue = 1; residue <= 100; residue++) {
+      for (let k = 0; k < 8; k++) {
+        atoms.push({
+          chain,
+          labelChain: chain,
+          residueNumber: residue,
+          insertion: residue === 52 && chain === 'B' ? 'A' : '',
+          atomName: `X${k}`,
+          element: k === 7 ? 'H' : k === 6 ? 'O' : 'C',
+          hydrogen: k === 7,
+          residueName: residue === 22 && k > 3 ? 'SER' : 'PRO',
+          x: residue + k / 10,
+          y: chain.charCodeAt(0),
+          z: -k,
+          bFactor: residue % 30,
+        })
+      }
+      if (residue % 25 === 0) atoms.push({ chain, labelChain: chain, residueNumber: residue, altLoc: 'B', firstConformation: false, x: 99 })
+    }
+  }
+  atoms.push({ chain: 'A', labelChain: 'D', residueNumber: 401, residueName: 'HEM', element: 'Fe', polymer: false })
+  for (let water = 0; water < 40; water++) {
+    atoms.push({ chain: water % 2 ? 'A' : 'B', labelChain: 'E', residueNumber: 500 + water, residueName: 'HOH', element: 'O', water: true, polymer: false })
+  }
+  for (let residue = 1; residue <= 20; residue++) atoms.push({ model: 2, residueNumber: residue, x: residue })
+  return atoms
+}
+
+void test('a structure appended from batches is the one built whole, at batches of a residue, a thousand atoms and the whole', () => {
+  const atoms = arrivingAtoms()
+  const whole = structureOf(atoms, new StructureBuilder())
+  for (const size of [1, 1000, Infinity]) {
+    const source = new StructureBuilder(2)
+    const target = new StructureBuilder(2)
+    // Each snapshot as it was given, and for one in fifty and the first, a copy of its tables made then
+    const given: { snapshot: Structure; copy: string | null }[] = []
+    const copyOf = (snapshot: Structure) => JSON.stringify([snapshot.atoms, snapshot.residues, snapshot.runs, snapshot.chains].map((table) => Object.values(table).map((column) => (typeof column === 'number' ? column : [...column]))))
+    const append = (last: boolean) => {
+      target.append(source.takeBatch('An arriving entry', last), atoms.length)
+      const snapshot = target.snapshot()
+      given.push({ snapshot, copy: given.length % 50 === 0 ? copyOf(snapshot) : null })
+    }
+    let since = 0
+    for (const changes of atoms) {
+      if (since >= size) {
+        source.callAtNextResidue(() => {
+          append(false)
+          since = 0
+        })
+      }
+      source.add({ ...base, ...changes })
+      since++
+    }
+    append(true)
+    const last = target.snapshot()
+    for (const key of tableKeys) {
+      if (key === 'title') continue
+      assert.deepEqual(last[key], whole[key], `${size}: ${key}`)
+    }
+    assert.equal(last.title, 'An arriving entry')
+    assert.equal(last.whole, true)
+    assert.ok(last.arrival !== null)
+    // Every snapshot but the last is partial, each a snapshot of the same arrival, and each stays as it was given
+    assert.ok(given.length >= (size === 1 ? whole.residues.count : size === 1000 ? 3 : 1), `${size}: ${given.length} batches`)
+    given.forEach(({ snapshot, copy }, i) => {
+      assert.equal(snapshot.whole, i === given.length - 1)
+      assert.equal(snapshot.arrival, last.arrival)
+      if (copy !== null) assert.equal(copyOf(snapshot), copy, `${size}: snapshot ${i}`)
+      // Each batch began at a residue's start, so every residue a snapshot holds has all its atoms
+      const { residues, atoms: held } = snapshot
+      assert.equal(residues.firstAtom[residues.count], held.count)
+      if (held.count < whole.atoms.count) assert.notEqual(whole.atoms.residue[held.count], whole.atoms.residue[held.count - 1])
+    })
+  }
+})
+
+void test("the last batch carries the tensors, and the secondary structure where the file's end changed an earlier batch's", () => {
+  const source = new StructureBuilder()
+  const target = new StructureBuilder()
+  source.add(base)
+  source.add({ ...base, residueNumber: 2, x: 4 })
+  source.setSecondaryStructure(0, 'strand')
+  source.callAtNextResidue(() => target.append(source.takeBatch('')))
+  source.add({ ...base, residueNumber: 3, x: 8 })
+  // The file's end gives residue 1, already handed on, a helix, and residue 3 a turn, and an atom its tensor
+  source.setSecondaryStructure(1, 'helix')
+  source.setSecondaryStructure(2, 'turn')
+  source.addTensor(2, [1, 0, 0, 2, 0, 3])
+  const last = source.takeBatch('', true)
+  assert.ok(last.end?.structure)
+  assert.deepEqual([...last.end.structure], [2, 1, 3])
+  target.append(last)
+  const structure = target.snapshot()
+  assert.deepEqual([...structure.residues.structure], [2, 1, 3])
+  assert.deepEqual([...(structure.tensors?.atoms ?? [])], [2])
+  assert.equal(structure.whole, true)
+  // Without a change to a residue handed on, the last batch's residues carry their own
+  const plain = new StructureBuilder()
+  plain.add(base)
+  plain.setSecondaryStructure(0, 'helix')
+  assert.equal(plain.takeBatch('', true).end?.structure, null)
+  // Nothing appends to a whole structure
+  assert.throws(() => target.append(plain.takeBatch('')), /already whole/)
+})
