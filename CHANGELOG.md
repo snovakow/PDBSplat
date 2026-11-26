@@ -2,6 +2,10 @@
 
 Version Release Notes
 
+## 0.2.13 - 2026-11-25
+
+- App improvements
+
 ## 0.2.12 - 2026-11-25
 
 - Backend improvements
