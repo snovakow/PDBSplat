@@ -2,6 +2,10 @@
 
 Version Release Notes
 
+## 0.5.0 - 2026-11-27
+
+- Residue and chain blobs keeping faded atoms apart from the rest, each blob drawn as its atoms are
+
 ## 0.4.0 - 2026-11-26
 
 - Large entries drawn as they arrive, the view easing out to keep them framed
