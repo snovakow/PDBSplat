@@ -2,17 +2,20 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { InterleavedBufferAttribute } from 'three'
 import {
+  carrierFlag,
   covarianceSize,
   createPool,
   ellipsoidsReach,
   paintSize,
+  pieceBits,
   shapeSize,
+  slotPaintSize,
   surfaceDeviations,
   writeRound,
 } from '../src/viewer/ellipsoidGeometry.ts'
 
-// The ellipsoids' geometry: one quad, drawn once for each slot of a pool, with each one's centre, covariance, paint
-// and piece as the instance's attributes
+// The ellipsoids' geometry: one quad, drawn once for each slot of a pool, with each one's centre, covariance, what it
+// grows from, its paint, its parent's and its piece as the instance's attributes
 
 void test('a round covariance has its variance along each axis and nothing between them', () => {
   const target = new Float32Array(8)
@@ -92,38 +95,60 @@ void test("a pool's geometry draws one quad for each slot, from its centre, cova
   assert.deepEqual([first.getX(0), first.getY(0), first.getZ(0)], [1, shapes[4], shapes[5]])
   assert.deepEqual([second.getX(0), second.getY(0), second.getZ(0)], [2, shapes[7], 3])
   assert.deepEqual([first.getX(1), second.getX(1), second.getZ(1)], [4, 5, 6])
-  // The piece the slots were filled for
+  // The piece the slots were filled for, with the carrier's flag above its index where a slot carries its parent
   assert.deepEqual([...pieces], [2, 2])
   assert.equal(geometry.getAttribute('piece').getX(1), 2)
+  pieces[1] = (2 | carrierFlag) >>> 0
+  assert.equal(pieces[1] & pieceBits, 2)
+  assert.equal(pieces[1] >>> 31, 1)
+  // What each slot grows from is laid out as its own shape is, after it in a buffer of its own
+  pool.starts.set([7, 8, 9, 0.5, 0, 0, 0.5, 0, 0.5], shapeSize)
+  const start = geometry.getAttribute('startCenter')
+  assert.deepEqual([start.getX(1), start.getY(1), start.getZ(1)], [7, 8, 9])
+  assert.deepEqual([geometry.getAttribute('startCovarianceA').getX(1), geometry.getAttribute('startCovarianceB').getZ(1)], [0.5, 0.5])
   // Each is an attribute of the instances, so every corner of an ellipsoid's quad is given the same, and each kind
   // of value is one buffer
-  for (const name of ['center', 'covarianceA', 'covarianceB', 'paint', 'piece']) {
+  const names = ['center', 'covarianceA', 'covarianceB', 'startCenter', 'startCovarianceA', 'startCovarianceB', 'paint', 'parentPaint', 'piece']
+  for (const name of names) {
     const attribute = geometry.getAttribute(name)
     assert.ok(attribute instanceof InterleavedBufferAttribute, name)
     assert.equal('isInstancedInterleavedBuffer' in attribute.data, true, name)
   }
-  const buffers = new Set(['center', 'covarianceA', 'covarianceB'].map((name) => {
+  const bufferOf = (name: string) => {
     const attribute = geometry.getAttribute(name)
     return attribute instanceof InterleavedBufferAttribute ? attribute.data : null
-  }))
-  assert.equal(buffers.size, 1)
-  assert.equal(pool.paint.length, 2 * paintSize)
+  }
+  // Five buffers a draw, the quad's corners among them, of the eight WebGPU takes by default, and the widest slot's
+  // stride such that the most slots any pool holds stay within the 256 MiB a buffer takes by default
+  const buffers = new Set(names.map(bufferOf))
+  assert.equal(buffers.size + 1, 5)
+  assert.deepEqual([...buffers].map((buffer) => buffer && buffer.stride * buffer.array.BYTES_PER_ELEMENT), [36, 36, 8, 4])
+  assert.ok(5_000_000 * 36 <= 256 * 2 ** 20)
+  assert.equal(bufferOf('center'), bufferOf('covarianceB'))
+  assert.equal(bufferOf('startCenter'), bufferOf('startCovarianceB'))
+  assert.equal(bufferOf('paint'), bufferOf('parentPaint'))
+  assert.equal(pool.paint.length, 2 * slotPaintSize)
   assert.equal(shapes.length, 2 * (3 + covarianceSize))
+  assert.equal(pool.starts.length, 2 * (3 + covarianceSize))
 })
 
 void test('the paint clamps and rounds what is written, and the attribute reads the same bytes', () => {
   const pool = createPool(2, 2)
   const { geometry, paint } = pool
   const painted = geometry.getAttribute('paint')
+  const parents = geometry.getAttribute('parentPaint')
   assert.equal(painted.itemSize, 4)
   assert.equal(painted.normalized, true)
-  assert.deepEqual([...paint], [0, 0, 0, 0, 0, 0, 0, 0])
-  paint.set([300, -5, 127.6, 255], 4)
+  assert.equal(parents.normalized, true)
+  assert.deepEqual([...paint], new Array(2 * slotPaintSize).fill(0))
+  // A slot's own paint, then its parent's
+  paint.set([300, -5, 127.6, 255, 10, 20, 30, 40], slotPaintSize)
   if (!(painted instanceof InterleavedBufferAttribute)) throw new Error('The paint is interleaved')
-  assert.deepEqual([...painted.data.array].slice(4), [255, 0, 128, 255])
+  assert.deepEqual([...painted.data.array].slice(slotPaintSize), [255, 0, 128, 255, 10, 20, 30, 40])
   // As a share of full, as a shader reads it
   assert.equal(painted.getX(1), 1)
   assert.equal(painted.getW(1), 1)
+  assert.equal(parents.getX(1), 10 / 255)
   // Rewritten paint is sent again only for the pieces said to be repainted
   pool.fill(1, 2, 1)
   pool.send()
@@ -134,5 +159,5 @@ void test('the paint clamps and rounds what is written, and the attribute reads 
   pool.repainted(1)
   pool.send()
   assert.equal(painted.data.version, version + 1)
-  assert.deepEqual(painted.data.updateRanges.map(({ start, count }) => [start, count]), [[0, 2 * paintSize]])
+  assert.deepEqual(painted.data.updateRanges.map(({ start, count }) => [start, count]), [[0, 2 * slotPaintSize]])
 })

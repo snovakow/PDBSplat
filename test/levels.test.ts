@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { selectAtoms, StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
+import { vdwRadius } from '../src/pdb/elements.ts'
+import { hiddenLayer, mergeLevels, partLayer, remergeChanged, wholeLayer } from '../src/pdb/merge.ts'
+import { chainOf, selectAtoms, StructureBuilder, type AtomRecord, type ShownChoice } from '../src/pdb/structure.ts'
 import { writeRound } from '../src/viewer/ellipsoidGeometry.ts'
 import {
   groupBy,
@@ -9,6 +11,7 @@ import {
   levelPixels,
   levels,
   mergeGaussians,
+  noGroup,
   pixelsPerUnit,
   typicalDiameter,
 } from '../src/viewer/levels.ts'
@@ -261,4 +264,128 @@ void test('the level drawn is the one the switch rule picks, among the levels wh
   // And with neither fitting, the chains, whose pool holds every one
   assert.equal(levelDrawn('auto', [false, false, true], diameters, 100), 2)
   assert.equal(levelDrawn('atoms', [false, false, true], diameters, 100), 2)
+})
+
+// Three chains of residues of several elements, then waters of the first chain in a run of their own, each atom at a
+// place that a shift moves where the atom is hidden
+function layeredEntry(shiftHidden: (atom: number) => number) {
+  const base: AtomRecord = {
+    x: 0,
+    y: 0,
+    z: 0,
+    element: 'C',
+    atomName: 'CA',
+    altLoc: '',
+    occupancy: 1,
+    bFactor: 20,
+    model: 1,
+    chain: 'A',
+    labelChain: 'A',
+    residueName: 'ALA',
+    residueNumber: 1,
+    insertion: '',
+    hydrogen: false,
+    water: false,
+    firstConformation: true,
+    polymer: true,
+  }
+  const builder = new StructureBuilder()
+  let atom = 0
+  for (const [c, chain] of ['A', 'B', 'C'].entries()) {
+    for (let residue = 1; residue <= 8; residue++) {
+      for (const [k, element] of ['N', 'C', 'C', 'O', 'S'].entries()) {
+        const shift = shiftHidden(atom++)
+        builder.add({ ...base, chain, labelChain: chain, residueNumber: residue, element, atomName: `${element}${k}`, x: 3 * residue + k * 0.7 + shift, y: c * 11 + Math.sin(residue + k), z: k * 0.4 - c })
+      }
+    }
+  }
+  for (let water = 0; water < 6; water++) {
+    const shift = shiftHidden(atom++)
+    builder.add({ ...base, labelChain: 'W', residueName: 'HOH', residueNumber: 100 + water, element: 'O', water: true, polymer: false, x: water * 2 + shift, y: -9, z: 4 })
+  }
+  return builder.finish()
+}
+
+void test("the merge by layer is the merge of each layer's members alone, and a hidden member is in no blob", () => {
+  // A fixed sequence of layers, a sixth of the atoms hidden and a third drawn in part
+  let seed = 7
+  const next = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  const count = 3 * 8 * 5 + 6
+  const layers = Uint8Array.from({ length: count }, () => {
+    const roll = next()
+    return roll < 1 / 6 ? hiddenLayer : roll < 0.5 ? partLayer : wholeLayer
+  })
+  const structure = layeredEntry(() => 0)
+  const shown = selectAtoms(structure, () => true)
+  const choice: ShownChoice = { hydrogens: true, waters: true, conformations: 'first', model: 1 }
+  const merged = mergeLevels(structure, choice, layers)
+  assert.equal(merged.layers, layers)
+  const positions = structure.atoms.positions
+  const weights = Array.from({ length: count }, (_, i) => vdwRadius(structure.elements[structure.atoms.element[i]]) ** 3)
+  const none = new Float32Array(count * 6)
+  for (const level of ['residues', 'chains'] as const) {
+    // As the shown atoms' groups by layer give it, the hidden ones in none
+    const grouping = levelGroups(structure, shown, level, layers)
+    for (let i = 0; i < count; i++) assert.equal(grouping.groups[i] === noGroup, layers[i] === hiddenLayer)
+    const reference = mergeGaussians(positions, none, weights, grouping)
+    assert.equal(merged[level].count, grouping.count)
+    near(merged[level].centers, [...reference.centers], level)
+    for (let k = 0; k < merged[level].scatters.length; k++) {
+      assert.ok(Math.abs(merged[level].scatters[k] - reference.covariances[k]) < 1e-3, `${level} scatter ${k}`)
+    }
+    // Each layer's members alone, grouped by their residue or chain, merge to the blobs of that layer
+    for (const layer of [wholeLayer, partLayer]) {
+      const members = [...shown.rows].filter((_, i) => layers[i] === layer)
+      const keys = members.map((i) => (level === 'residues' ? structure.atoms.residue[i] : chainOf(structure, i)))
+      const alone = mergeGaussians(
+        Float32Array.from(members.flatMap((i) => [...positions.subarray(i * 3, i * 3 + 3)])),
+        new Float32Array(members.length * 6),
+        members.map((i) => weights[i]),
+        groupBy(keys, level === 'residues' ? structure.residues.count : structure.chains.count),
+      )
+      const { groups } = groupBy(keys, level === 'residues' ? structure.residues.count : structure.chains.count)
+      members.forEach((i, k) => {
+        const blob = grouping.groups[i]
+        near(merged[level].centers.subarray(blob * 3, blob * 3 + 3), [...alone.centers.subarray(groups[k] * 3, groups[k] * 3 + 3)], `${level} layer ${layer}`)
+      })
+    }
+  }
+  // A hidden atom moved anywhere moves no blob
+  const moved = layeredEntry((atom) => (layers[atom] === hiddenLayer ? 500 : 0))
+  const again = mergeLevels(moved, choice, layers)
+  assert.deepEqual(again.residues, merged.residues)
+  assert.deepEqual(again.chains, merged.chains)
+  // Merged in one layer, every shown atom is in a blob, as without layers
+  assert.deepEqual(mergeLevels(structure, choice, new Uint8Array(count)).residues, mergeLevels(structure, choice).residues)
+})
+
+void test('the levels merged again for the chains whose atoms changed layer are those a whole merge gives', () => {
+  let seed = 11
+  const next = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  const count = 3 * 8 * 5 + 6
+  const randomLayers = () => Uint8Array.from({ length: count }, () => {
+    const roll = next()
+    return roll < 1 / 6 ? hiddenLayer : roll < 0.5 ? partLayer : wholeLayer
+  })
+  const structure = layeredEntry(() => 0)
+  const shown = selectAtoms(structure, () => true)
+  const choice: ShownChoice = { hydrogens: true, waters: true, conformations: 'first', model: 1 }
+  const first = randomLayers()
+  // One residue's atoms moved to another layer, as a pick moves them; every atom's; and every atom back to one layer
+  const picked = first.slice()
+  for (const i of [5, 6, 7, 8, 9]) picked[i] = picked[i] === wholeLayer ? partLayer : wholeLayer
+  const cases: (Uint8Array | null)[] = [picked, randomLayers(), null, first]
+  let previous = mergeLevels(structure, choice, first)
+  for (const layers of cases) {
+    const again = remergeChanged(structure, shown.rows, shown.count, previous, layers, Infinity)
+    assert.ok(again)
+    assert.deepEqual(again, mergeLevels(structure, choice, layers))
+    assert.equal(again.layers, layers)
+    previous = again
+  }
+  // A pick touches one chain, whose atoms alone are merged again, its forty and its six waters; more than a limit of
+  // them asks for a whole merge
+  const one = remergeChanged(structure, shown.rows, shown.count, mergeLevels(structure, choice, first), picked, 46)
+  assert.ok(one)
+  assert.equal(remergeChanged(structure, shown.rows, shown.count, mergeLevels(structure, choice, first), picked, 45), null)
 })

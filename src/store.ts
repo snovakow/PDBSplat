@@ -5,12 +5,13 @@ import { defaultOptions, type EntryHolds, type ViewOptions } from './options.ts'
 import { noBounds, type StructureBounds } from './pdb/bounds.ts'
 import type { Burial } from './pdb/burial.ts'
 import type { LoadProgress } from './pdb/entryLoad.ts'
-import { fetchEntry, isAbort, mergeEntry, type Entry, type Loaded } from './pdb/fetchEntry.ts'
-import type { MergedLevels } from './pdb/merge.ts'
+import { fetchEntry, isAbort, mergeEntry, settleMerges, type Entry, type Loaded } from './pdb/fetchEntry.ts'
+import { remergeChanged, type MergedLevels } from './pdb/merge.ts'
 import {
   emptyStructure,
   modelOf,
   roomToGrow,
+  sameChoice,
   selectAtoms,
   shownBy,
   type ShownAtoms,
@@ -18,6 +19,11 @@ import {
   type Structure,
 } from './pdb/structure.ts'
 import { hasLigands } from './viewer/focus.ts'
+
+// How many atoms the chains a change of layers touches may hold for their blobs to be merged again on the page itself,
+// rather than by the loader's worker: a few hundredths of a second's work, as every example's chains are, and as a pick
+// under a picked Focus touches on any entry. A new Focus on a giant touches every chain, which the worker merges
+const quickMergeAtoms = 1 << 18
 
 // Entries the panel offers, smallest first, each of which tests something the others don't
 export const examples = [
@@ -87,6 +93,8 @@ interface LastShown {
   growing: { mask: Uint8Array; rows: Uint32Array } | null
 }
 let lastShown: LastShown | null = null
+// The atoms another choice chose last, and the choice, so that the same selection comes back while they stand
+let lastChosen: { structure: Structure; choice: ShownChoice; shown: ShownAtoms } | null = null
 
 // The atoms drawn: the structure's atoms that isShown keeps under Hydrogens, Waters, Alternates and the model shown.
 // The same selection comes back while those stand, so that the panel's count and the drawing components, which each
@@ -105,6 +113,12 @@ export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models'
     last.conformations === conformations &&
     last.model === model
   if (same && last.structure === structure) return last.shown
+  // A choice given up for another is kept for chosenAtoms, as what's drawn may stay with it a while, and what was kept
+  // of another structure goes, so that an entry no longer shown isn't held
+  if (last && !same && !last.growing && last.structure === structure) {
+    const { hydrogens: h, waters: w, conformations: c, model: m } = last
+    lastChosen = { structure, choice: { hydrogens: h, waters: w, conformations: c, model: m }, shown: last.shown }
+  } else if (lastChosen && lastChosen.structure !== structure) lastChosen = null
   const { flags } = structure.atoms
   const keep = (atom: number) => shownBy(flags[atom], modelOf(structure, atom), choice)
   if (!structure.arrival) {
@@ -139,6 +153,16 @@ export function shownAtoms(state: Pick<State, 'structure' | 'options' | 'models'
   }
   const shown: ShownAtoms = { mask: growing.mask.subarray(0, count), rows: growing.rows.subarray(0, kept), count: kept }
   lastShown = { structure, hydrogens, waters, conformations, model, shown, growing }
+  return shown
+}
+
+// The atoms a choice other than the one shown chooses, as the blobs the loader last merged may have been merged for
+// while a newer choice's are on their way
+export function chosenAtoms(structure: Structure, choice: ShownChoice): ShownAtoms {
+  if (lastChosen?.structure === structure && sameChoice(lastChosen.choice, choice)) return lastChosen.shown
+  const { flags } = structure.atoms
+  const shown = selectAtoms(structure, (atom) => shownBy(flags[atom], modelOf(structure, atom), choice))
+  lastChosen = { structure, choice, shown }
   return shown
 }
 
@@ -200,10 +224,10 @@ interface State {
   error: string | null
   progress: LoadProgress | null
   load: (id: string) => Promise<void>
-  // The shown entry's residues and chains merged into blobs, under the choice of atoms they were merged for, which
-  // the loader merges again on request; and its burial, null until the loader has worked it out
+  // The shown entry's residues and chains merged into blobs, under the choice of atoms and the layers they were merged
+  // for, which the loader merges again on request; and its burial, null until the loader has worked it out
   merged: MergedLevels | null
-  requestMerge: (choice: ShownChoice) => void
+  requestMerge: (choice: ShownChoice, layers: Uint8Array | null) => void
   burial: Burial | null
   options: ViewOptions
   setOptions: (changes: Partial<ViewOptions>) => void
@@ -317,10 +341,23 @@ export const useStore = create<State>()((set, get) => ({
       console.warn(`PDBSplat: ${message}`)
     }
   },
-  // The levels merged again for the entry shown, once the loader has them, unless another entry is shown by then
-  requestMerge: (choice) => {
-    const { structure } = get()
-    mergeEntry(structure, choice).then(
+  // The levels merged again for the entry shown, once the loader has them, unless another entry is shown by then. New
+  // layers for the choice already merged, where they touch few atoms, are merged here and now, from the levels as
+  // they stand
+  requestMerge: (choice, layers) => {
+    const state = get()
+    const { structure } = state
+    const standing = state.merged
+    if (standing && structure.whole && sameChoice(standing.choice, choice) && sameChoice(shownChoice(state), choice)) {
+      const shown = shownAtoms(state)
+      const again = remergeChanged(structure, shown.rows, shown.count, standing, layers, quickMergeAtoms)
+      if (again) {
+        settleMerges()
+        set({ merged: again })
+        return
+      }
+    }
+    mergeEntry(structure, choice, layers).then(
       (merged) => {
         if (get().structure === structure) set({ merged })
       },

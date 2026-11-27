@@ -6,6 +6,7 @@ import {
   cameraProjectionMatrix,
   cameraViewMatrix,
   cameraWorldMatrix,
+  clamp,
   dot,
   float,
   Fn,
@@ -23,6 +24,7 @@ import {
   select,
   sqrt,
   textureLoad,
+  uint,
   uniform,
   varyingProperty,
   vec2,
@@ -30,7 +32,7 @@ import {
   vec4,
 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
-import { ellipsoidAttributes, surfaceDeviations } from './ellipsoidGeometry.ts'
+import { ellipsoidAttributes, pieceBits, surfaceDeviations } from './ellipsoidGeometry.ts'
 import { PieceTable, tableSide, texelsPerLayer } from './pieces.ts'
 
 // The one thing the splat styles draw: an ellipsoid, given by its centre and its covariance. An atom is a round one, a
@@ -42,7 +44,9 @@ import { PieceTable, tableSide, texelsPerLayer } from './pieces.ts'
 // in the scene: the vertex stage moves each centre by the object's matrix and turns each shape by its rotation, so
 // that a pixel is handed its ellipsoid in scene coordinates, wherever the object is placed. Each instance belongs to a
 // piece, whose texel in the piece table says whether it's drawn at the level its mesh draws, and one that isn't is
-// collapsed out of sight
+// collapsed out of sight, and how far it has grown there out of its parent, one level coarser: the vertex stage mixes
+// its centre, covariance and paint from what it grows from to its own by that fraction, and hands the pixel its share
+// of its alpha in the soft sums, as the morph's rules give them
 
 // An ellipsoid's surface lies where its own measure of distance from its centre, squared, is this
 const surfaceDistanceSquared = surfaceDeviations * surfaceDeviations
@@ -58,12 +62,19 @@ const nearMargin = 1.01
 // The least length of the shape's gradient to divide by, where a ray passes outside the outline and meets no surface
 const leastGradient = 1e-12
 
-// The instances' attributes: the centre, the covariance in two halves, the paint and the piece
+// The instances' attributes: the centre and the covariance in two halves, the centre and covariance they grow from,
+// the paint and the parent's, and the piece, whose highest bit says whether the instance carries its parent
 const centre = attribute(ellipsoidAttributes.centre, 'vec3')
 const shapeA = attribute(ellipsoidAttributes.shapeA, 'vec3')
 const shapeB = attribute(ellipsoidAttributes.shapeB, 'vec3')
+const startCentre = attribute(ellipsoidAttributes.startCentre, 'vec3')
+const startShapeA = attribute(ellipsoidAttributes.startShapeA, 'vec3')
+const startShapeB = attribute(ellipsoidAttributes.startShapeB, 'vec3')
 const paint = attribute(ellipsoidAttributes.paint, 'vec4')
-const piece = attribute(ellipsoidAttributes.piece, 'uint')
+const parentPaint = attribute(ellipsoidAttributes.parentPaint, 'vec4')
+const pieceWord = attribute(ellipsoidAttributes.piece, 'uint')
+// The bit a carrier's piece holds above its index
+const carrierBit = 31
 
 // The piece table the instances are read against, which the splats swap in for each entry: it starts as an empty one
 // with every piece hidden
@@ -88,17 +99,24 @@ const levelChannel = uniform(new Vector4(0, 0, 0, 1)).onObjectUpdate(({ object }
   object ? (levelChannels.get(object) ?? noLevel) : noLevel,
 )
 
-// Whether the instance's piece is drawn at its mesh's level, from the piece's texel: the table's layers are square,
-// and a piece's index runs along a layer's rows and then from layer to layer
-function pieceShown() {
+// The value the instance's piece holds at its mesh's level, from the piece's texel: below 0 where it isn't drawn
+// there, and otherwise how far it has grown. The table's layers are square, and a piece's index runs along a layer's
+// rows and then from layer to layer
+function pieceValue() {
   const side = int(tableSide)
   const perLayer = int(texelsPerLayer)
-  const index = int(piece).toVar()
+  const index = int(pieceWord.bitAnd(uint(pieceBits))).toVar()
   const layer = index.div(perLayer).toVar()
   const within = index.sub(layer.mul(perLayer)).toVar()
   const row = within.div(side).toVar()
   const texel = textureLoad(pieceTable, ivec2(within.sub(row.mul(side)), row)).depth(layer)
-  return dot(texel, levelChannel).greaterThanEqual(0)
+  return dot(texel, levelChannel)
+}
+
+// The mix a fraction of the way from one value to another, written out so that it's the first exactly at 0 and the
+// second exactly at 1, as the morph's rules have it
+function grown(from: Node<'vec3'>, to: Node<'vec3'>, t: Node<'float'>) {
+  return from.mul(t.oneMinus()).add(to.mul(t))
 }
 
 // What a pixel is given of its ellipsoid: the centre, the inverse of the widened covariance, laid out as the covariance
@@ -108,6 +126,7 @@ const inverseA = varyingProperty('vec3', 'vEllipsoidInverseA')
 const inverseB = varyingProperty('vec3', 'vEllipsoidInverseB')
 const paintOf = varyingProperty('vec4', 'vEllipsoidPaint')
 const dimmingOf = varyingProperty('float', 'vEllipsoidDimming')
+const shareOf = varyingProperty('float', 'vEllipsoidShare')
 
 // A symmetric matrix, given as its xx, xy, xz and its yy, yz, zz, times a vector
 function times(a: Node<'vec3'>, b: Node<'vec3'>, v: Node<'vec3'>) {
@@ -137,12 +156,26 @@ function cofactorsB(a: Node<'vec3'>, b: Node<'vec3'>) {
 // further out, so it covers the ellipsoid from any view, and a little more of the screen than it needs. The camera's
 // projection is taken as centred, as a perspective camera's is without a view offset
 export const ellipsoidVertex = Fn(() => {
+  // How far the instance has grown out of its parent, and its shape and paint that far: the carrier mixed from its
+  // parent to itself, and any other child from tiny inside the parent, with its share of the soft sums rising from
+  // nothing as it grows
+  const value = pieceValue().toVar()
+  const t = clamp(value, 0, 1).toVar()
+  const carries = pieceWord.shiftRight(uint(carrierBit)).equal(uint(1))
+  // The covariance's own share grows as the square of a size that runs evenly from start to end: the carrier's
+  // parent's share as (1 − t)², and any other child's own as t²
+  const shaped = select(carries, t.mul(float(2).sub(t)), t.mul(t)).toVar()
+  const ownCentre = grown(startCentre, centre, t)
+  const ownA = grown(startShapeA, shapeA, shaped).toVar()
+  const ownB = grown(startShapeB, shapeB, shaped).toVar()
+  shareOf.assign(select(carries, float(1), t))
+
   // The ellipsoid in scene coordinates: its centre placed by the structure's object, and its shape turned by the
   // object's rotation, whose columns are where the object takes its own axes
-  const placed = modelWorldMatrix.mul(vec4(centre, 1)).xyz.toVar()
+  const placed = modelWorldMatrix.mul(vec4(ownCentre, 1)).xyz.toVar()
   const { a: placedA, b: placedB } = turned(
-    shapeA,
-    shapeB,
+    ownA,
+    ownB,
     modelWorldMatrix.mul(vec4(1, 0, 0, 0)).xyz,
     modelWorldMatrix.mul(vec4(0, 1, 0, 0)).xyz,
     modelWorldMatrix.mul(vec4(0, 0, 1, 0)).xyz,
@@ -163,7 +196,7 @@ export const ellipsoidVertex = Fn(() => {
   centreOf.assign(placed)
   inverseA.assign(widenedA.div(determinant))
   inverseB.assign(widenedB.div(determinant))
-  paintOf.assign(paint)
+  paintOf.assign(parentPaint.mul(t.oneMinus()).add(paint.mul(t)))
 
   // A widened Gaussian is dimmed so that it gives off the light it did: by the ratio of the areas the two cover as
   // seen from the camera. Seen along a direction, a Gaussian's area goes as the root of its cofactors' form on it
@@ -199,7 +232,7 @@ export const ellipsoidVertex = Fn(() => {
   const across = mix(lowest, highest, positionGeometry.xy.mul(0.5).add(0.5)).mul(drawn)
   const clip = cameraProjectionMatrix.mul(vec4(across, drawn.negate(), 1)).toVar()
   // Wholly nearer than the near plane, or of a piece not drawn at its mesh's level, it's drawn nowhere
-  If(farthest.lessThan(cameraNear).or(pieceShown().not()), () => {
+  If(farthest.lessThan(cameraNear).or(value.lessThan(0)), () => {
     clip.assign(vec4(2, 2, 2, 1))
   })
   return clip
@@ -214,6 +247,9 @@ export const rayDirection = normalize(positionView)
 export const ellipsoidPaint = paintOf
 // What the widening leaves of a Gaussian's alpha
 export const ellipsoidDimming = dimmingOf
+// The pixel's ellipsoid's share of its alpha in the soft sums, as it grows out of its parent, which is also how far a
+// child that doesn't carry its parent has come out of it: 1 once it has grown, and for the carrier
+export const ellipsoidShare = shareOf
 // The view depth of the pixel's ellipsoid's centre
 export const ellipsoidDepth = cameraViewMatrix.mul(vec4(centreOf, 1)).z.negate()
 

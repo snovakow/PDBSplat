@@ -35,6 +35,7 @@ import {
   ellipsoidPaint,
   ellipsoidPassage,
   ellipsoidReach,
+  ellipsoidShare,
   rayDirection,
   type Passage,
 } from './ellipsoid.ts'
@@ -120,7 +121,8 @@ function coverage(out: Node<'float'>) {
 }
 
 // The soft style: a Gaussian's density along the pixel's ray, which Hardness sharpens into a flat disc. It's dimmed
-// by what its widening took, and shaded by the depth cue at its centre
+// by what its widening took, and by its share as it grows out of its parent, and shaded by the depth cue at its
+// centre
 export const softColor: ColorNode = Fn(() => {
   // From 0 through the centre to 1 at the edge, two standard deviations out
   const out = ellipsoidReach.toVar()
@@ -131,7 +133,7 @@ export const softColor: ColorNode = Fn(() => {
   const falloff = exp(pow(out, pow(hardestExponent, hardness)).mul(-2))
   // A hard disc's rim is the edge's fade, and a Gaussian has faded out before it
   const rim = mix(1, edge, hardness)
-  const alpha = falloff.mul(ellipsoidPaint.a).mul(ellipsoidDimming).mul(opacity).mul(rim).mul(cutFade)
+  const alpha = falloff.mul(ellipsoidPaint.a).mul(ellipsoidDimming).mul(opacity).mul(rim).mul(cutFade).mul(ellipsoidShare)
   return vec4(ellipsoidPaint.rgb.mul(depthShade(ellipsoidDepth)), alpha)
 })()
 
@@ -254,13 +256,18 @@ function layerColor(layer: Layer, passage: Passage, front: boolean): ColorNode {
 // How far along the pixel's ray a layer's surface lies, for its depth: where the ray leaves the ellipsoid for a back
 // layer, and for a front layer where it enters, or its cut face where the cut has taken that. How far out of the
 // ellipsoid a point of the ray lies grows as the square of its distance from the middle of the chord, from how far
-// out the ray passes at the middle to 1 at either end, which sinks the cut face as above
+// out the ray passes at the middle to 1 at either end, which sinks the cut face as above. A child still growing out of
+// its parent, not the one carrying it, sinks its cut face further, by what its share still lacks, a whole dish's depth
+// as it starts: inside its parent the parent's face sinks less than that, so the parent's face shows wherever the cut
+// crosses both, and the child's comes through only as it grows. Every front layer's depth is taken here, the ambient
+// occlusion's pass among them, so that every pass places the cut face alike
 function surfaceAlong(passage: Passage, front: boolean) {
   if (!front) return passage.y
   const half = max(passage.y.sub(passage.x).mul(0.5), leastChord)
   const fromMiddle = cutAlong.sub(passage.x.add(passage.y).mul(0.5)).div(half)
   const outAtCut = passage.z.add(passage.z.oneMinus().mul(fromMiddle.mul(fromMiddle)))
-  return select(passage.x.lessThan(cutAlong), cutAlong.add(outAtCut.mul(capDish)), passage.x)
+  const sunk = outAtCut.add(ellipsoidShare.oneMinus())
+  return select(passage.x.lessThan(cutAlong), cutAlong.add(sunk.mul(capDish)), passage.x)
 }
 
 // A layer's depth node: the depth of the surface under each pixel, so that solids that meet cut into one another

@@ -6,8 +6,12 @@ import { firstEntry, useStore } from './store.ts'
 import { createRenderer } from './viewer/renderer.ts'
 import { Viewer } from './viewer/Viewer.tsx'
 
+const parameters = new URLSearchParams(window.location.search)
 // ?webgl in the page URL starts with the panel's Use WebGL 2 on
-const webglRequested = new URLSearchParams(window.location.search).has('webgl')
+const webglRequested = parameters.has('webgl')
+// ?morph=<t> draws a fixed Detail's level grown only that far out of the level coarser, from 0 to 1
+const morphParameter = parameters.get('morph')
+const morph = morphParameter !== null && Number.isFinite(Number(morphParameter)) ? Math.min(Math.max(Number(morphParameter), 0), 1) : null
 
 // Structures are measured in ångströms and span tens to hundreds of them
 const camera = { fov: 50, near: 0.1, far: 5000, position: [0, 0, 60] as const }
@@ -30,7 +34,7 @@ function App() {
   return (
     <>
       <Canvas key={forceWebGL ? 'webgl' : 'webgpu'} gl={gl} camera={camera} flat>
-        <Viewer />
+        <Viewer morph={morph} />
       </Canvas>
       <AtomLabel />
       <Panel forceWebGL={forceWebGL} setForceWebGL={setForceWebGL} renderer={renderer} />

@@ -2,10 +2,11 @@ import { Color, DataTexture, RGBAFormat, UnsignedByteType } from 'three'
 import { dot, int, ivec2, round, vec3 } from 'three/tsl'
 import type { Node, TextureNode } from 'three/webgpu'
 import type { ColorBy, Conformations, Focus } from '../options.ts'
+import { layerOfAlpha } from '../pdb/merge.ts'
 import type { ShownAtoms, Structure } from '../pdb/structure.ts'
 import { atomColoring } from './atomColors.ts'
 import { focusTest } from './focus.ts'
-import type { Grouping } from './levels.ts'
+import { noGroup, type Grouping } from './levels.ts'
 
 // The atoms' paint: each shown atom's colour and alpha, four bytes per atom in the order they're shown. The ellipsoids
 // take it as an attribute of their instances, and the field as a table, a texture its march reads by the index of the
@@ -68,30 +69,110 @@ export function readAtomIndex(source: Uint8ClampedArray, offset: number) {
 // The colour each atom is painted with, reused by every paint
 const color = new Color()
 
-// Paints every shown atom's four bytes: its colour from the colouring, darkened by Burial, and its alpha from what
-// fades it. An atom in focus has a full alpha, and one out of focus Fade's share of it. Every model drawn at once
-// overlaps the others, so each atom then keeps one over the square root of the number of models, where the atoms are
-// summed or glow; layered, only the nearest see-through surface shows, which no number of models adds to, so each
-// model's atoms stay whole. An atom in one of several conformations keeps its occupancy's share while they're all
-// drawn. Only an alternate's occupancy fades it: an atom without one may be given less than 1, and is still drawn
-// whole. Opacity acts through the shading's uniform, so it isn't here. The shown atoms from one place up to another
-// may be painted alone, as an entry arriving in batches is
-export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint, from = 0, to = paint.shown.count) {
-  const { shown, structure, colorBy, burial, buried, focus, picked, fade, model, modelCount, conformations, layered } = paint
-  const colorOf = atomColoring(structure, shown, colorBy, burial, buried)
+// What fades the atoms: the paint's inputs their alphas follow
+export type AlphaInputs = Pick<
+  TablePaint,
+  'shown' | 'structure' | 'focus' | 'picked' | 'fade' | 'model' | 'modelCount' | 'conformations' | 'layered'
+>
+
+// Each atom's alpha, by its row, as a byte before it's clamped and rounded: from what fades it. An atom in focus has a
+// full alpha, and one out of focus Fade's share of it. Every model drawn at once overlaps the others, so each atom then
+// keeps one over the square root of the number of models, where the atoms are summed or glow; layered, only the
+// nearest see-through surface shows, which no number of models adds to, so each model's atoms stay whole. An atom in
+// one of several conformations keeps its occupancy's share while they're all drawn. Only an alternate's occupancy
+// fades it: an atom without one may be given less than 1, and is still drawn whole. Opacity acts through the shading's
+// uniform, so it isn't here
+function alphaOf({ structure, focus, picked, fade, model, modelCount, conformations, layered }: AlphaInputs) {
   const inFocus = focusTest(structure, focus, picked)
   const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
   const { altLoc, occupancy } = structure.atoms
+  return (atom: number) => {
+    const focusShare = !inFocus || inFocus(atom) ? 1 : fade
+    const occupancyShare = conformations === 'all' && altLoc[atom] !== 0 ? occupancy[atom] : 1
+    return fullByte * focusShare * modelShare * occupancyShare
+  }
+}
+
+// Paints every shown atom's four bytes: its colour from the colouring, darkened by Burial, and its alpha from what
+// fades it. The shown atoms from one place up to another may be painted alone, as an entry arriving in batches is
+export function paintAtoms(bytes: Uint8ClampedArray, paint: TablePaint, from = 0, to = paint.shown.count) {
+  const { shown, structure, colorBy, burial, buried } = paint
+  const colorOf = atomColoring(structure, shown, colorBy, burial, buried)
+  const alpha = alphaOf(paint)
   for (let i = from; i < to; i++) {
     const atom = shown.rows[i]
     colorOf(atom, color)
-    const focusShare = !inFocus || inFocus(atom) ? 1 : fade
-    const occupancyShare = conformations === 'all' && altLoc[atom] !== 0 ? occupancy[atom] : 1
     bytes[i * bytesPerAtom] = color.r * fullByte
     bytes[i * bytesPerAtom + 1] = color.g * fullByte
     bytes[i * bytesPerAtom + 2] = color.b * fullByte
-    bytes[i * bytesPerAtom + 3] = fullByte * focusShare * modelShare * occupancyShare
+    bytes[i * bytesPerAtom + 3] = alpha(atom)
   }
+}
+
+// The layers last found for each set of shown atoms, and the inputs they were found from, so that the same object comes
+// back while those stand, or while the layers do. They're kept beside the shown atoms, so that nothing of an entry is
+// held once its atoms are no longer shown
+const layersFound = new WeakMap<ShownAtoms, { inputs: AlphaInputs; layers: Uint8Array | null }>()
+
+// Whether two sets of inputs fade the atoms alike, but perhaps for Fade
+function sameBesideFade(a: AlphaInputs, b: AlphaInputs) {
+  return (
+    a.shown === b.shown &&
+    a.structure === b.structure &&
+    a.focus === b.focus &&
+    a.picked === b.picked &&
+    a.model === b.model &&
+    a.modelCount === b.modelCount &&
+    a.conformations === b.conformations &&
+    a.layered === b.layered
+  )
+}
+
+// The layer an atom out of focus is drawn in at a Fade, where no alternate is drawn in part: its alpha is Fade's share
+// of the models', clamped and rounded to a byte as the paint does
+function fadedLayer({ fade, model, modelCount, layered }: AlphaInputs) {
+  const modelShare = model === null && !layered ? 1 / Math.sqrt(modelCount) : 1
+  return layerOfAlpha(Uint8ClampedArray.of(fullByte * fade * modelShare * 1)[0])
+}
+
+// The layer each shown atom is drawn in, by its place among them, from the alpha byte its paint gives it, which the
+// merged levels are merged by: null where every shown atom is in the same layer, as they're then merged in one, and
+// for an entry still arriving, whose levels are merged in one until all of it has come. The same object comes back
+// while the inputs or the layers stand, so that a new Fade or colouring merges nothing again
+export function shownLayers(inputs: AlphaInputs): Uint8Array | null {
+  if (!inputs.structure.whole) return null
+  const last = layersFound.get(inputs.shown)
+  const { structure, focus, picked, conformations } = inputs
+  const alternatesWhole = conformations === 'first' || structure.tallies.alternates === 0
+  if (last && sameBesideFade(last.inputs, inputs)) {
+    // A new Fade moves no atom between layers where the atoms out of focus stay in the layer they were in, as they do
+    // while it stays above nothing, so that a drag of its slider merges nothing again
+    if (last.inputs.fade === inputs.fade) return last.layers
+    if (alternatesWhole && fadedLayer(last.inputs) === fadedLayer(inputs)) {
+      layersFound.set(inputs.shown, { inputs, layers: last.layers })
+      return last.layers
+    }
+  }
+  // With every atom in focus and no alternate drawn in part, every atom has the same alpha, and no pass is needed
+  if (!focusTest(structure, focus, picked) && alternatesWhole) {
+    layersFound.set(inputs.shown, { inputs, layers: null })
+    return null
+  }
+  const { rows, count } = inputs.shown
+  const alpha = alphaOf(inputs)
+  const byte = new Uint8ClampedArray(1)
+  const found = new Uint8Array(count)
+  let mixed = false
+  for (let i = 0; i < count; i++) {
+    byte[0] = alpha(rows[i])
+    found[i] = layerOfAlpha(byte[0])
+    mixed ||= found[i] !== found[0]
+  }
+  let layers: Uint8Array | null = mixed ? found : null
+  const before = last?.layers
+  if (layers && before && before.length === count && before.every((layer, i) => layer === found[i])) layers = before
+  layersFound.set(inputs.shown, { inputs, layers })
+  return layers
 }
 
 // Paints a table's bytes, and has its texture sent again
@@ -102,7 +183,7 @@ export function paintAtomTable({ texture: table, bytes }: AtomTable, paint: Tabl
 
 // Paints a merged level's groups from the bytes its members are painted in: each group's four bytes are the weighted
 // mean of its members' colours and alphas, by the weights the ellipsoids were merged with, so that a blob takes the
-// colour of the atoms it stands for and fades as they do
+// colour of the atoms it stands for and fades as they do. A member in no group, as a hidden atom is, paints none
 export function paintMerged(
   bytes: Uint8ClampedArray,
   source: Uint8ClampedArray,
@@ -113,6 +194,7 @@ export function paintMerged(
   const totals = new Float64Array(count)
   for (let i = 0; i < groups.length; i++) {
     const group = groups[i]
+    if (group === noGroup) continue
     const weight = weights[i]
     totals[group] += weight
     for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source[i * bytesPerAtom + k]
@@ -126,7 +208,8 @@ export function paintMerged(
 
 // Paints the groups that the members from one place up to another make up, every member of each among them, as
 // paintMerged paints them, which a merged level whose groups each lie in one stretch of members, as a residue's do,
-// is painted by a stretch at a time
+// is painted by a stretch at a time. The stretch's groups run from the least to the most of its members', a residue's
+// whole blob and its blob in part being numbered together, whatever order their members come in
 export function paintMergedRange(
   bytes: Uint8ClampedArray,
   source: Uint8ClampedArray,
@@ -135,18 +218,27 @@ export function paintMergedRange(
   from: number,
   to: number,
 ) {
-  if (to <= from) return
-  const first = groups[from]
-  const count = groups[to - 1] + 1 - first
+  let first = Infinity
+  let last = -1
+  for (let i = from; i < to; i++) {
+    const group = groups[i]
+    if (group === noGroup) continue
+    if (group < first) first = group
+    if (group > last) last = group
+  }
+  if (last < 0) return
+  const count = last + 1 - first
   const sums = new Float64Array(count * bytesPerAtom)
   const totals = new Float64Array(count)
   for (let i = from; i < to; i++) {
+    if (groups[i] === noGroup) continue
     const group = groups[i] - first
     const weight = weights[i]
     totals[group] += weight
     for (let k = 0; k < bytesPerAtom; k++) sums[group * bytesPerAtom + k] += weight * source[i * bytesPerAtom + k]
   }
   for (let group = 0; group < count; group++) {
+    if (!(totals[group] > 0)) continue
     const offset = (first + group) * bytesPerAtom
     for (let k = 0; k < bytesPerAtom; k++) bytes[offset + k] = sums[group * bytesPerAtom + k] / totals[group]
   }

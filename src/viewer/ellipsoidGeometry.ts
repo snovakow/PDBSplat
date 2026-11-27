@@ -7,21 +7,29 @@ import {
 } from 'three'
 
 // The geometry a set of ellipsoids is drawn from: one quad, drawn once for each, with each one's centre, covariance,
-// paint and piece as the instance's attributes. A pool holds a fixed number of them in slots, and the pieces drawn at
-// its level are written into stretches of slots and taken out again as they come and go, each change sent to the GPU
-// as the ranges of slots it wrote, so that nothing is built again for a change of what's drawn
+// paint and piece as the instance's attributes, and what it grows from as it grows out of its parent, one level
+// coarser: the parent's centre and covariance for the child that carries it, and for each other child a point inside
+// the parent and its own covariance shrunk almost to nothing, with the parent's paint. A pool holds a fixed number of
+// them in slots, and the pieces drawn at its level are written into stretches of slots and taken out again as they
+// come and go, each change sent to the GPU as the ranges of slots it wrote, so that nothing is built again for a change
+// of what's drawn
 
 // How many standard deviations out an ellipsoid's surface is, and so the edge a Gaussian is drawn to: an ellipsoid
 // reaches twice the root of its covariance along any direction
 export const surfaceDeviations = 2
 
-// The instances' attributes by name: the centre, the covariance's xx, xy and xz, its yy, yz and zz, the colour and
-// alpha the atoms are painted with, and the index of the piece the instance belongs to
+// The instances' attributes by name: the centre, the covariance's xx, xy and xz, its yy, yz and zz, the centre and
+// covariance it grows from, the colour and alpha the atoms are painted with, its parent's, and the index of the piece
+// the instance belongs to, with whether it carries its parent
 export const ellipsoidAttributes = {
   centre: 'center',
   shapeA: 'covarianceA',
   shapeB: 'covarianceB',
+  startCentre: 'startCenter',
+  startShapeA: 'startCovarianceA',
+  startShapeB: 'startCovarianceB',
   paint: 'paint',
+  parentPaint: 'parentPaint',
   piece: 'piece',
 }
 
@@ -29,11 +37,24 @@ export const ellipsoidAttributes = {
 export const covarianceSize = 6
 // The bytes of an ellipsoid's paint: its colour's red, green and blue, and its alpha
 export const paintSize = 4
-// The floats of an instance's shape in its slot: its centre's x, y and z, then its covariance
+// The floats of an instance's shape in its slot: its centre's x, y and z, then its covariance, and as many of the shape
+// it grows from
 export const shapeSize = 3 + covarianceSize
+// The bytes of a slot's paint: its own, then its parent's
+export const slotPaintSize = 2 * paintSize
 
 // The piece that is no piece, which every free slot points at, and which is never drawn
 export const noPiece = 0
+
+// A slot's whole number holds its piece's index in its lower bits, and in its highest whether the instance carries its
+// parent, which no piece's index reaches
+export const pieceBits = 0x7fffffff
+export const carrierFlag = 0x80000000
+
+// How much of its own covariance a child that doesn't carry its parent starts from, which grows to all of it: small
+// enough that it starts within its parent at any size, the vertex stage's widening of a pixel or so then holding it
+// there, and above nought, so that its covariance is never degenerate
+export const startScale = 1e-4
 
 // A round ellipsoid's covariance, for a standard deviation alike along every axis, written at an offset
 export function writeRound(target: Float32Array, offset: number, deviation: number) {
@@ -167,15 +188,17 @@ class WrittenSlots {
   }
 }
 
-// A fixed number of slots for ellipsoids, each holding one instance's shape, paint and piece, which a piece fills as
-// one stretch of slots. The slots past the last one in use aren't drawn, and a slot between that a piece left points
-// at no piece, which the vertex stage never draws
+// A fixed number of slots for ellipsoids, each holding one instance's shape, what it grows from, its paint, its
+// parent's and its piece, which a piece fills as one stretch of slots. The slots past the last one in use aren't
+// drawn, and a slot between that a piece left points at no piece, which the vertex stage never draws
 export class Pool {
   readonly geometry = new InstancedBufferGeometry()
   readonly capacity: number
-  // Each slot's centre and covariance, its paint, four bytes that clamp and round what's written to them, and its
-  // piece, as the GPU's copies are written from
+  // Each slot's centre and covariance, the centre and covariance it grows from, its paint and its parent's, eight
+  // bytes that clamp and round what's written to them, and its piece with whether it carries its parent, as the GPU's
+  // copies are written from
   readonly shapes: Float32Array
+  readonly starts: Float32Array
   readonly paint: Uint8ClampedArray
   readonly pieces: Uint32Array
   // How many slots from the first are drawn: the end of the last stretch a piece holds
@@ -189,6 +212,7 @@ export class Pool {
   private readonly freeStarts: number[] = []
   private readonly freeEnds: number[] = []
   private readonly shapesWritten: WrittenSlots
+  private readonly startsWritten: WrittenSlots
   private readonly paintWritten: WrittenSlots
   private readonly piecesWritten: WrittenSlots
 
@@ -202,23 +226,31 @@ export class Pool {
     // The quad's corners, which the vertex stage places on screen
     geometry.setAttribute('position', new BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3))
     geometry.setIndex([0, 1, 2, 0, 2, 3])
-    // Each kind of value is one buffer, its attributes interleaved in it, as a draw takes only so many buffers
+    // Each kind of value is one buffer, its attributes interleaved in it, as a draw takes only so many buffers: the
+    // quad's corners and these four make five of the eight a draw may take by default
     this.shapes = new Float32Array(capacity * shapeSize)
     const shapes = new InstancedInterleavedBuffer(this.shapes, shapeSize)
     geometry.setAttribute(ellipsoidAttributes.centre, new InterleavedBufferAttribute(shapes, 3, 0))
     geometry.setAttribute(ellipsoidAttributes.shapeA, new InterleavedBufferAttribute(shapes, 3, 3))
     geometry.setAttribute(ellipsoidAttributes.shapeB, new InterleavedBufferAttribute(shapes, 3, 6))
-    // The attribute reads the paint's bytes as they are, each as a share of 255
-    this.paint = new Uint8ClampedArray(capacity * paintSize)
-    const paint = new InstancedInterleavedBuffer(new Uint8Array(this.paint.buffer), paintSize)
+    this.starts = new Float32Array(capacity * shapeSize)
+    const starts = new InstancedInterleavedBuffer(this.starts, shapeSize)
+    geometry.setAttribute(ellipsoidAttributes.startCentre, new InterleavedBufferAttribute(starts, 3, 0))
+    geometry.setAttribute(ellipsoidAttributes.startShapeA, new InterleavedBufferAttribute(starts, 3, 3))
+    geometry.setAttribute(ellipsoidAttributes.startShapeB, new InterleavedBufferAttribute(starts, 3, 6))
+    // The attributes read the paints' bytes as they are, each as a share of 255
+    this.paint = new Uint8ClampedArray(capacity * slotPaintSize)
+    const paint = new InstancedInterleavedBuffer(new Uint8Array(this.paint.buffer), slotPaintSize)
     geometry.setAttribute(ellipsoidAttributes.paint, new InterleavedBufferAttribute(paint, paintSize, 0, true))
+    geometry.setAttribute(ellipsoidAttributes.parentPaint, new InterleavedBufferAttribute(paint, paintSize, paintSize, true))
     // A whole number of 32 bits, which both backends read as an unsigned integer as it's written
     this.pieces = new Uint32Array(capacity)
     const pieces = new InstancedInterleavedBuffer(this.pieces, 1)
     geometry.setAttribute(ellipsoidAttributes.piece, new InterleavedBufferAttribute(pieces, 1, 0))
     geometry.instanceCount = 0
     this.shapesWritten = new WrittenSlots(shapes, shapeSize)
-    this.paintWritten = new WrittenSlots(paint, paintSize)
+    this.startsWritten = new WrittenSlots(starts, shapeSize)
+    this.paintWritten = new WrittenSlots(paint, slotPaintSize)
     this.piecesWritten = new WrittenSlots(pieces, 1)
   }
 
@@ -252,9 +284,9 @@ export class Pool {
   }
 
   // Gives a piece a stretch of slots for a number of instances, marked seen in the frame, and returns its first slot,
-  // whose shapes and paint the caller then writes in full. Where no stretch is free, the pieces seen longest ago and
-  // not in this frame give theirs up, oldest first, until one is. A fill that can't fit is refused whole, with -1, and
-  // takes nothing from any other piece
+  // whose shapes, starts and paint the caller then writes in full, and the carrier's flag where one carries its
+  // parent. Where no stretch is free, the pieces seen longest ago and not in this frame give theirs up, oldest first,
+  // until one is. A fill that can't fit is refused whole, with -1, and takes nothing from any other piece
   fill(piece: number, count: number, frame: number) {
     if (this.first[piece] >= 0) this.hide(piece)
     if (count === 0 || count > this.capacity) return -1
@@ -271,12 +303,13 @@ export class Pool {
     this.seen[piece] = frame
     this.pieces.fill(piece, slot, slot + count)
     this.shapesWritten.add(slot, count)
+    this.startsWritten.add(slot, count)
     this.paintWritten.add(slot, count)
     this.piecesWritten.add(slot, count)
     return slot
   }
 
-  // Marks a piece's paint as rewritten, to be sent again
+  // Marks a piece's paints, its own and its parents', as rewritten, to be sent again
   repainted(piece: number) {
     const slot = this.first[piece]
     if (slot >= 0) this.paintWritten.add(slot, this.held[piece])
@@ -317,6 +350,7 @@ export class Pool {
   // Has the GPU's copies take what was written since the last time, by the ranges written
   send() {
     this.shapesWritten.send()
+    this.startsWritten.send()
     this.paintWritten.send()
     this.piecesWritten.send()
   }
@@ -356,7 +390,7 @@ export class Pool {
         slot = this.freeEnds[free++]
         continue
       }
-      const piece = this.pieces[slot]
+      const piece = this.pieces[slot] & pieceBits
       if (this.seen[piece] >= frame) {
         if (slot - from >= count) return true
         from = slot + this.held[piece]

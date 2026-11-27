@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 import { measureBounds } from '../src/pdb/bounds.ts'
-import { atomsIn, inflatedSize, LoadError, loadEntry, type EntryBatch, type LoadProgress } from '../src/pdb/entryLoad.ts'
+import { atomsIn, inflatedSize, LoadError, loadEntry, type EntryBatch, type LoadProgress, type MergeRequest } from '../src/pdb/entryLoad.ts'
 import { buffersOf } from '../src/pdb/entryWorker.ts'
 import { MergedGrowth, mergeLevels } from '../src/pdb/merge.ts'
 import { parseMmcif } from '../src/pdb/mmcif.ts'
@@ -261,7 +261,7 @@ void test('a request to merge again while the entry is read is answered by the n
   const { get } = serve({ gz: gzipped })
   let clock = 0
   const batches: EntryBatch[] = []
-  const requests: { pending: { serial: number; choice: { hydrogens: boolean; waters: boolean; conformations: 'first' | 'all'; model: number | null } } | null } = { pending: null }
+  const requests: { pending: MergeRequest | null } = { pending: null }
   const asked = { hydrogens: true, waters: true, conformations: 'all', model: null } as const
   await loadEntry('1ABC', choice, {
     fetch: get,
@@ -270,7 +270,7 @@ void test('a request to merge again while the entry is read is answered by the n
     requests,
     onBatch: (batch) => {
       batches.push(structuredClone(batch))
-      if (batches.length === 3) requests.pending = { serial: 7, choice: asked }
+      if (batches.length === 3) requests.pending = { serial: 7, choice: asked, layers: null }
     },
   })
   assert.ok(batches.length > 4)
@@ -283,6 +283,28 @@ void test('a request to merge again while the entry is read is answered by the n
   const reference = mergeLevels(whole, asked)
   assert.deepEqual(merged?.residues.centers, reference.residues.centers)
   assert.deepEqual(merged?.chains, reference.chains)
+})
+
+void test('a request to merge again by layers while the entry is read waits for all of it, no batch answering it', async () => {
+  const { get } = serve({ gz: gzipped })
+  let clock = 0
+  const batches: EntryBatch[] = []
+  const requests: { pending: MergeRequest | null } = { pending: null }
+  const asked = { hydrogens: true, waters: true, conformations: 'all', model: null } as const
+  await loadEntry('1ABC', choice, {
+    fetch: get,
+    now: () => (clock += 400),
+    leastBatch: 0,
+    requests,
+    onBatch: (batch) => {
+      batches.push(batch)
+      if (batches.length === 2) requests.pending = { serial: 9, choice: asked, layers: new Uint8Array(4) }
+    },
+  })
+  assert.ok(batches.length > 4)
+  // Nothing answers it, and the levels go on merged in one layer, under the load's own choice
+  assert.ok(batches.every((batch, i) => batch.answers === null && batch.merged.reset === (i === 0)))
+  assert.equal(requests.pending?.serial, 9)
 })
 
 void test('an entry of fewer atoms than a batch holds arrives in one batch, however slowly it comes', async () => {

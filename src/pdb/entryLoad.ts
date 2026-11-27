@@ -74,10 +74,13 @@ export interface EntryBatch {
   report: LoadReport | null
 }
 
-// A request to merge the levels again under another choice, which the load takes at its next batch
+// A request to merge the levels again under another choice, by the layers its shown atoms are drawn in or in one
+// where those are null. The load takes one in one layer at its next batch; one by layers waits for the whole entry,
+// as an entry arriving is merged in one layer
 export interface MergeRequest {
   serial: number
   choice: ShownChoice
+  layers: Uint8Array | null
 }
 
 // A load's failure, with its message as the page shows it
@@ -90,7 +93,7 @@ export interface LoadOptions {
   // Where what has been read is handed on, a batch at a time, the last once the file is read; without it the load
   // gives the structure whole at the end alone
   onBatch?: (batch: EntryBatch) => void
-  // A request to merge again, which the load answers at its next batch and then clears
+  // A request to merge again, which the load answers at its next batch and then clears, where it's in one layer
   requests?: { pending: MergeRequest | null }
   // How many atoms a batch holds at least, batchAtoms unless a test asks for fewer
   leastBatch?: number
@@ -256,7 +259,7 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
     bounds.add(places, boundsTaken, places.atoms.count)
     boundsTaken = places.atoms.count
     let answers: number | null = null
-    if (requests.pending) {
+    if (requests.pending && !requests.pending.layers) {
       merge.rechoose(requests.pending.choice, places)
       answers = requests.pending.serial
       requests.pending = null
@@ -303,7 +306,8 @@ export async function loadEntry(id: string, choice: LoadChoice, options: LoadOpt
       tell()
     }
     const batchDue = after - lastBatch >= batchEvery && reader.atomCount - boundsTaken >= (options.leastBatch ?? batchAtoms)
-    if (onBatch && !batchAsked && reader.atomsStarted && (batchDue || (requests.pending && boundsTaken > 0))) {
+    const mergeAsked = requests.pending !== null && !requests.pending.layers && boundsTaken > 0
+    if (onBatch && !batchAsked && reader.atomsStarted && (batchDue || mergeAsked)) {
       batchAsked = true
       reader.callAtNextResidue(batchAtNextResidue)
     }

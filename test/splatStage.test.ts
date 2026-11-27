@@ -94,7 +94,7 @@ void test('an entry whose shown atoms fall to none draws nothing, until atoms ar
     filledFrom: levels.map(() => null),
     table,
   }
-  const state: Frames = { level: 0, frame: 0, stale: true, planes: new Float64Array(planesSize) }
+  const state: Frames = { level: 0, grown: 1, frame: 0, stale: true, planes: new Float64Array(planesSize) }
 
   // With Waters on, the atoms level draws every water
   const shownWaters = contentOf(structure, true)

@@ -16,7 +16,12 @@ import { ShadingUniforms } from './ShadingUniforms.tsx'
 import { Spin } from './Spin.tsx'
 import { isOpaque, isWeighted, styleOf } from './styles.ts'
 
-export function Viewer() {
+interface Props {
+  // How far a fixed Detail's level is drawn grown out of the level coarser, or null for wholly
+  morph: number | null
+}
+
+export function Viewer({ morph }: Props) {
   const get = useThree((s) => s.get)
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null)
   // The structure's object, which every style's meshes are children of, in the scene while the viewer is, and placed
@@ -47,7 +52,7 @@ export function Viewer() {
       <Picking structureObject={structureObject} />
       <ShadingUniforms />
       {style.kind === 'splats' ? (
-        <ProteinSplats structureObject={structureObject} />
+        <ProteinSplats structureObject={structureObject} morph={morph} />
       ) : style.kind === 'surface' ? (
         <ProteinSurface structureObject={structureObject} />
       ) : (

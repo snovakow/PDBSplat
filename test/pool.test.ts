@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { InterleavedBufferAttribute, StaticDrawUsage, type InterleavedBuffer } from 'three'
-import { createPool, noPiece, paintSize, shapeSize, type Pool } from '../src/viewer/ellipsoidGeometry.ts'
+import { Group, InterleavedBufferAttribute, StaticDrawUsage, type InterleavedBuffer } from 'three'
+import { vdwRadii } from '../src/pdb/elements.ts'
+import { mergeLevels } from '../src/pdb/merge.ts'
+import { selectAtoms, StructureBuilder, type AtomRecord, type ShownChoice } from '../src/pdb/structure.ts'
+import type { TablePaint } from '../src/viewer/atomTable.ts'
+import {
+  covarianceSize,
+  createPool,
+  noPiece,
+  paintSize,
+  pieceBits,
+  shapeSize,
+  slotPaintSize,
+  startScale,
+  type Pool,
+} from '../src/viewer/ellipsoidGeometry.ts'
+import { levels } from '../src/viewer/levels.ts'
+import { startDepth } from '../src/viewer/morph.ts'
+import { pieceCount as piecesOf, PieceTable, planesSize } from '../src/viewer/pieces.ts'
+import { invertCovariance } from '../src/viewer/rayEllipsoids.ts'
+import { poolSize, SplatContent } from '../src/viewer/splatContent.ts'
+import { drawLevel, paintStepOf, type Frames, type Stage } from '../src/viewer/splatStage.ts'
 
 // A pool of slots for ellipsoids: pieces filled into stretches of slots, taken out again, reclaimed oldest unseen
 // first, the slots drawn, and the ranges of each buffer sent to the GPU
@@ -109,6 +129,7 @@ void test('a fill that cannot fit is refused whole and takes nothing from any ot
 void test('the ranges sent cover exactly the slots written, in each buffer\'s own elements', () => {
   const pool = createPool(20, 6)
   const shapes = bufferOf(pool, 'center')
+  const starts = bufferOf(pool, 'startCenter')
   const paint = bufferOf(pool, 'paint')
   const pieces = bufferOf(pool, 'piece')
   pool.fill(1, 3, 1)
@@ -116,12 +137,13 @@ void test('the ranges sent cover exactly the slots written, in each buffer\'s ow
   pool.fill(3, 4, 1)
   pool.hide(2)
   pool.send()
-  // The shapes and the paint of every slot filled, the stretches that touch joined into one, and the pieces of the
-  // hidden slots as well, which now point at none
+  // The shapes, the starts and the paints of every slot filled, the stretches that touch joined into one, and the
+  // pieces of the hidden slots as well, which now point at none
   assert.deepEqual(rangesOf(shapes), [[0, 9 * shapeSize]])
-  assert.deepEqual(rangesOf(paint), [[0, 9 * paintSize]])
+  assert.deepEqual(rangesOf(starts), [[0, 9 * shapeSize]])
+  assert.deepEqual(rangesOf(paint), [[0, 9 * slotPaintSize]])
   assert.deepEqual(rangesOf(pieces), [[0, 9]])
-  for (const buffer of [shapes, paint, pieces]) sent(buffer)
+  for (const buffer of [shapes, starts, paint, pieces]) sent(buffer)
 
   // Once sent, only what's written after goes
   const version = shapes.version
@@ -130,8 +152,9 @@ void test('the ranges sent cover exactly the slots written, in each buffer\'s ow
   pool.send()
   assert.equal(shapes.version, version + 1)
   assert.deepEqual(rangesOf(shapes), [[3 * shapeSize, 2 * shapeSize]])
+  assert.deepEqual(rangesOf(starts), [[3 * shapeSize, 2 * shapeSize]])
   // Piece 1's repaint and piece 4's fill touch, and go as one
-  assert.deepEqual(rangesOf(paint), [[0, 5 * paintSize]])
+  assert.deepEqual(rangesOf(paint), [[0, 5 * slotPaintSize]])
   assert.deepEqual(rangesOf(pieces), [[3, 2]])
 
   // Ranges not yet sent, as of a buffer not drawn since, are sent with the next ones
@@ -157,10 +180,11 @@ void test('random fills, hides and reclaims keep each piece in slots of its own,
   // Each buffer, its elements in a slot, and the slots written to it since three last sent its ranges
   const kinds = [
     { buffer: bufferOf(pool, 'center'), stride: shapeSize, written: new Set<number>() },
-    { buffer: bufferOf(pool, 'paint'), stride: paintSize, written: new Set<number>() },
+    { buffer: bufferOf(pool, 'startCenter'), stride: shapeSize, written: new Set<number>() },
+    { buffer: bufferOf(pool, 'paint'), stride: slotPaintSize, written: new Set<number>() },
     { buffer: bufferOf(pool, 'piece'), stride: 1, written: new Set<number>() },
   ]
-  const [, paint, pieces] = kinds
+  const [, , paint, pieces] = kinds
   const mark = (written: Set<number>, slot: number, count: number) => {
     for (let s = slot; s < slot + count; s++) written.add(s)
   }
@@ -268,7 +292,7 @@ void test('random fills, hides and reclaims keep each piece in slots of its own,
 
 void test('the buffers are interleaved, sent by ranges, and never re-sent whole each render', () => {
   const pool = createPool(4, 2)
-  for (const name of ['center', 'covarianceA', 'covarianceB', 'paint', 'piece']) {
+  for (const name of ['center', 'covarianceA', 'covarianceB', 'startCenter', 'startCovarianceA', 'startCovarianceB', 'paint', 'parentPaint', 'piece']) {
     const buffer = bufferOf(pool, name)
     assert.equal(buffer.usage, StaticDrawUsage, `${name} keeps three's static usage`)
   }
@@ -276,4 +300,145 @@ void test('the buffers are interleaved, sent by ranges, and never re-sent whole 
   const piece = pool.geometry.getAttribute('piece')
   assert.equal(piece.itemSize, 1)
   assert.ok(bufferOf(pool, 'piece').array instanceof Uint32Array)
+})
+
+// Two chains of three residues of four atoms each, of carbon, nitrogen and oxygen
+function smallEntry() {
+  const base: AtomRecord = {
+    x: 0,
+    y: 0,
+    z: 0,
+    element: 'C',
+    atomName: 'CA',
+    altLoc: '',
+    occupancy: 1,
+    bFactor: 20,
+    model: 1,
+    chain: 'A',
+    labelChain: 'A',
+    residueName: 'ALA',
+    residueNumber: 1,
+    insertion: '',
+    hydrogen: false,
+    water: false,
+    firstConformation: true,
+    polymer: true,
+  }
+  const builder = new StructureBuilder()
+  for (const [c, chain] of ['A', 'B'].entries()) {
+    for (let residue = 1; residue <= 3; residue++) {
+      for (const [k, element] of ['N', 'C', 'C', 'O'].entries()) {
+        builder.add({ ...base, chain, labelChain: chain, residueNumber: residue, element, atomName: `${element}${k}`, x: residue * 3.8 + k, y: c * 12 + k * k * 0.3, z: k % 2 })
+      }
+    }
+  }
+  return builder.finish()
+}
+
+void test("a slot holds its instance, what it grows from out of its parent, and its parent's paint, which a repaint reaches", () => {
+  const structure = smallEntry()
+  const shown = selectAtoms(structure, () => true)
+  const choice: ShownChoice = { hydrogens: false, waters: false, conformations: 'first', model: 1 }
+  const shape = { scale: 1, thermal: 0, ellipsoids: false }
+  const content = new SplatContent(structure, shown, choice, 'auto', shape, vdwRadii(structure.elements), new Group(), () => () => undefined)
+  assert.ok(content.grow(structure, shown, mergeLevels(structure, choice), [0, 0, 0], () => Infinity))
+  const paintBy = (colorBy: TablePaint['colorBy']): TablePaint => ({
+    shown,
+    structure,
+    colorBy,
+    burial: 0,
+    buried: null,
+    focus: 'all',
+    picked: null,
+    fade: 0.3,
+    model: 1,
+    modelCount: 1,
+    conformations: 'first',
+    layered: true,
+  })
+  const byChain = paintBy('chain')
+  while (!content.paintedFrom(byChain)) content.paintOnward(byChain, () => undefined)
+  const table = new PieceTable(piecesOf(structure))
+  const stage: Stage = {
+    entry: structure,
+    pools: levels.map((level) => createPool(poolSize(structure, level), table.capacity)),
+    filledFrom: levels.map(() => null),
+    table,
+  }
+  const planes = new Float64Array(planesSize)
+  // Each slot a level's pool holds, with its instance and its parent's in the level after
+  const slotsOf = (level: number) => {
+    const owned = content.levels[level]
+    const pool = stage.pools[level]
+    assert.ok(owned && pool)
+    const slots: { slot: number; piece: number; i: number; parent: number }[] = []
+    for (let piece = 1; piece < owned.spans.sizes.length; piece++) {
+      let slot = pool.slotOf(piece)
+      for (let s = owned.spans.first[piece]; s < owned.spans.first[piece + 1]; s++) {
+        for (let i = owned.spans.start[s]; i < owned.spans.end[s]; i++, slot++) slots.push({ slot, piece, i, parent: owned.parents?.[i] ?? -1 })
+      }
+    }
+    return { pool, slots }
+  }
+  for (const level of [0, 1, 2]) {
+    const state: Frames = { level, grown: 0.5, frame: 0, stale: true, planes: new Float64Array(planesSize) }
+    drawLevel(stage, content, level, state, planes, 0.5)
+    const { pool, slots } = slotsOf(level)
+    assert.equal(slots.length, level === 0 ? 24 : level === 1 ? 6 : 2)
+    const parentLevel = content.parentOf(level)
+    const owned = content.levels[level]
+    assert.ok(owned)
+    const carried = new Map<number, number>()
+    for (const { slot, piece, i, parent } of slots) {
+      const at = slot * shapeSize
+      // The piece's index, with the carrier's flag above it
+      const carries = pool.pieces[slot] >>> 31 === 1
+      assert.equal(pool.pieces[slot] & pieceBits, piece)
+      // Its own paint, and its parent's after it, or its own again where it carries itself
+      const paintAt = slot * slotPaintSize
+      const parentPaint: Uint8ClampedArray = parentLevel ? parentLevel.paint.subarray(parent * paintSize, parent * paintSize + paintSize) : owned.paint.subarray(i * paintSize, i * paintSize + paintSize)
+      assert.deepEqual([...pool.paint.subarray(paintAt, paintAt + paintSize)], [...owned.paint.subarray(i * paintSize, i * paintSize + paintSize)])
+      assert.deepEqual([...pool.paint.subarray(paintAt + paintSize, paintAt + slotPaintSize)], [...parentPaint])
+      if (!parentLevel?.blobs) {
+        // A chain's blob is its own parent, and grows from itself
+        assert.ok(carries)
+        assert.deepEqual([...pool.starts.subarray(at, at + shapeSize)], [...pool.shapes.subarray(at, at + shapeSize)])
+        continue
+      }
+      const centre = parentLevel.blobs.centers.subarray(parent * 3, parent * 3 + 3)
+      const covariance = parentLevel.blobs.covariances.subarray(parent * covarianceSize, parent * covarianceSize + covarianceSize)
+      if (carries) {
+        // One child of each parent carries it, growing from the parent's own shape
+        assert.ok(!carried.has(parent))
+        carried.set(parent, i)
+        assert.deepEqual([...pool.starts.subarray(at, at + 3)], [...centre])
+        assert.deepEqual([...pool.starts.subarray(at + 3, at + shapeSize)], [...covariance])
+      } else {
+        // Every other child starts within the parent's ellipsoid at half its size, its own covariance shrunk
+        const inverse = new Float64Array(covarianceSize)
+        invertCovariance(covariance, 0, inverse, 0)
+        const d = [0, 1, 2].map((k) => pool.starts[at + k] - centre[k])
+        const [xx, xy, xz, yy, yz, zz] = inverse
+        const depth = Math.sqrt(d[0] * (xx * d[0] + xy * d[1] + xz * d[2]) + d[1] * (xy * d[0] + yy * d[1] + yz * d[2]) + d[2] * (xz * d[0] + yz * d[1] + zz * d[2]))
+        assert.ok(depth <= startDepth + 1e-4, `level ${level} instance ${i}: ${depth}`)
+        for (let k = 0; k < covarianceSize; k++) assert.equal(pool.starts[at + 3 + k], Math.fround(pool.shapes[at + 3 + k] * startScale))
+      }
+    }
+    if (parentLevel?.blobs) assert.equal(carried.size, parentLevel.blobs.grouping.count)
+    // The piece table holds how far the pieces have grown
+    assert.equal(table.values[4 + level], 0.5)
+  }
+
+  // Repainted by element, every slot's own paint and its parent's follow
+  const before = [...stage.pools[0]?.paint ?? []]
+  const byElement = paintBy('element')
+  while (!content.paintedFrom(byElement)) paintStepOf(content, stage, byElement)
+  const { pool, slots } = slotsOf(0)
+  const residues = content.levels[1]
+  assert.ok(residues)
+  for (const { slot, parent } of slots) {
+    const at = slot * slotPaintSize + paintSize
+    assert.deepEqual([...pool.paint.subarray(at, at + paintSize)], [...residues.paint.subarray(parent * paintSize, parent * paintSize + paintSize)])
+  }
+  assert.notDeepEqual([...pool.paint], before)
 })

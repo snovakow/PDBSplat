@@ -7,16 +7,17 @@ import type { LoadChoice, MergedLevels } from './merge.ts'
 import type { AtomPlaces, ShownChoice } from './structure.ts'
 
 // What a worker is asked: to load an entry by its checked ID, merging its levels under a choice; to hold an entry's
-// columns, and work out its burial where it's asked to; or to merge the levels of the entry it holds under a choice
+// columns, and work out its burial where it's asked to; or to merge the levels of the entry it holds under a choice, by
+// the layers the shown atoms are drawn in, or in one where those are null
 export type EntryRequest =
   | { kind: 'load'; id: string; choice: LoadChoice }
   | { kind: 'hold'; places: AtomPlaces; burial: boolean }
-  | { kind: 'merge'; serial: number; choice: ShownChoice }
+  | { kind: 'merge'; serial: number; choice: ShownChoice; layers: Uint8Array | null }
 
 // What it answers: the load's progress; each batch of what it has read, the last once the file is read, a request to
-// merge again made while it reads answered by a batch's blobs; the burial once it's worked out, with how long that
-// took; the levels merged again for the request of that serial once the entry is read; or why the load failed, as the
-// page shows it
+// merge again in one layer made while it reads answered by a batch's blobs; the burial once it's worked out, with how
+// long that took; the levels merged again for the request of that serial once the entry is read, the latest of those
+// waiting when it comes to them; or why the load failed, as the page shows it
 export type EntryReply =
   | { kind: 'progress'; progress: LoadProgress }
   | { kind: 'batch'; batch: EntryBatch }
@@ -36,9 +37,15 @@ export function buffersOf(value: unknown, found = new Set<ArrayBuffer>()): Array
   return [...found]
 }
 
+// What the main thread holds of a worker: a way to ask it, and to end it
+export interface EntryWorkerHandle {
+  ask: (request: EntryRequest, transfer?: ArrayBuffer[]) => void
+  end: () => void
+}
+
 // One worker, which tells its replies to a handler until it's ended. A worker that fails to start or stops answers as
 // a failed load would
-export class EntryWorker {
+export class EntryWorker implements EntryWorkerHandle {
   private worker: Worker | null
 
   constructor(onReply: (reply: EntryReply) => void) {
@@ -54,8 +61,8 @@ export class EntryWorker {
     this.worker = worker
   }
 
-  ask(request: EntryRequest) {
-    this.worker?.postMessage(request)
+  ask(request: EntryRequest, transfer: ArrayBuffer[] = []) {
+    this.worker?.postMessage(request, { transfer })
   }
 
   // Ends the worker, and with it any download it was making, and every reply still to come

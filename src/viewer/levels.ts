@@ -1,6 +1,7 @@
 // Levels of detail: the atoms merged into one Gaussian per residue or per chain, each level's typical drawn diameter,
 // and the rule that picks the level to draw by how large its Gaussians are on screen
 import type { Detail } from '../options.ts'
+import { hiddenLayer, wholeLayer } from '../pdb/merge.ts'
 import { chainOf, type ShownAtoms, type Structure } from '../pdb/structure.ts'
 
 // A level the splat styles can draw, finest first: the atoms themselves, one Gaussian per residue, or one per chain
@@ -12,6 +13,12 @@ export interface Grouping {
   groups: Uint32Array
   count: number
 }
+
+// The group of an item in none, as a hidden atom is at a merged level
+export const noGroup = 0xffffffff
+
+// The layers a merged level's blob may be drawn in, whole and in part
+const drawnLayers = 2
 
 // Items grouped by their keys, each a whole number below the key count, such as a row of a table
 export function groupBy(keys: ArrayLike<number>, keyCount: number): Grouping {
@@ -27,14 +34,46 @@ export function groupBy(keys: ArrayLike<number>, keyCount: number): Grouping {
 }
 
 // The shown atoms grouped as a merged level merges them: by residue, or by chain, each within its own model, so that
-// every model drawn at once keeps its own blobs
-export function levelGroups(structure: Structure, shown: ShownAtoms, level: Exclude<Level, 'atoms'>): Grouping {
-  const keys = new Uint32Array(shown.count)
-  for (let i = 0; i < shown.count; i++) {
-    const atom = shown.rows[i]
-    keys[i] = level === 'residues' ? structure.atoms.residue[atom] : chainOf(structure, atom)
+// every model drawn at once keeps its own blobs, and by the layer each is drawn in, given by its place among the shown
+// atoms, or all in one where none are given. A residue's blobs are numbered in the order of the residues, its whole one
+// before its one in part, and a chain's in each layer as its first residue in that layer comes; a hidden atom is in
+// none, as the loader merges them
+export function levelGroups(
+  structure: Structure,
+  shown: ShownAtoms,
+  level: Exclude<Level, 'atoms'>,
+  layers: Uint8Array | null = null,
+): Grouping {
+  const { residue } = structure.atoms
+  const groups = new Uint32Array(shown.count)
+  const chainBlobs = new Int32Array(level === 'chains' ? structure.chains.count * drawnLayers : 0).fill(-1)
+  const blobs = new Int32Array(drawnLayers)
+  let count = 0
+  for (let start = 0; start < shown.count; ) {
+    const row = residue[shown.rows[start]]
+    let end = start
+    blobs.fill(-1)
+    for (; end < shown.count && residue[shown.rows[end]] === row; end++) {
+      const layer = layers ? layers[end] : wholeLayer
+      if (layer !== hiddenLayer) blobs[layer] = 0
+    }
+    for (let layer = 0; layer < drawnLayers; layer++) {
+      if (blobs[layer] < 0) continue
+      if (level === 'residues') {
+        blobs[layer] = count++
+        continue
+      }
+      const key = chainOf(structure, shown.rows[start]) * drawnLayers + layer
+      if (chainBlobs[key] < 0) chainBlobs[key] = count++
+      blobs[layer] = chainBlobs[key]
+    }
+    for (let i = start; i < end; i++) {
+      const layer = layers ? layers[i] : wholeLayer
+      groups[i] = layer === hiddenLayer ? noGroup : blobs[layer]
+    }
+    start = end
   }
-  return groupBy(keys, level === 'residues' ? structure.residues.count : structure.chains.count)
+  return { groups, count }
 }
 
 // One Gaussian per group: its centre, its covariance in the order [xx, xy, xz, yy, yz, zz], its members' summed
@@ -48,7 +87,8 @@ export interface MergedGaussians {
 
 // Merges Gaussians into one per group by matching moments: each group's centre is the weighted mean of its members'
 // centres, and its covariance the weighted mean of their covariances plus the scatter of their centres about the mean,
-// so that a group spread along a line becomes an ellipsoid along it. Each weight must be above 0
+// so that a group spread along a line becomes an ellipsoid along it. Each weight must be above 0, and a member in no
+// group is left out
 export function mergeGaussians(
   centers: Float32Array,
   covariances: Float32Array,
@@ -60,6 +100,7 @@ export function mergeGaussians(
   const means = new Float64Array(count * 3)
   for (let i = 0; i < members; i++) {
     const group = groups[i]
+    if (group === noGroup) continue
     const weight = weights[i]
     totals[group] += weight
     means[group * 3] += weight * centers[i * 3]
@@ -78,6 +119,7 @@ export function mergeGaussians(
   const counts = new Uint32Array(count)
   for (let i = 0; i < members; i++) {
     const group = groups[i]
+    if (group === noGroup) continue
     const weight = weights[i]
     const dx = centers[i * 3] - means[group * 3]
     const dy = centers[i * 3 + 1] - means[group * 3 + 1]
@@ -117,6 +159,7 @@ export function blobCovariances(
   const totals = new Float64Array(count)
   for (let i = 0; i < groups.length; i++) {
     const group = groups[i]
+    if (group === noGroup) continue
     const weight = weights[i]
     totals[group] += weight
     for (let k = 0; k < 6; k++) sums[group * 6 + k] += weight * covariances[i * 6 + k]

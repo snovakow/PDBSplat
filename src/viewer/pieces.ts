@@ -1,7 +1,7 @@
 // The pieces an entry is drawn, culled and picked by: each of its chains is one, a group of runs, numbered by the
 // chain's row plus one, so that 0 is no piece. Each piece has a sphere that holds everything it draws at any level, a
-// texel in the piece table that says whether it's drawn at each level, and the stretches of each level's instances it
-// owns, which its pool slots are filled from
+// texel in the piece table that says whether it's drawn at each level and how far it has grown there out of the level
+// coarser, and the stretches of each level's instances it owns, which its pool slots are filled from
 import { DataArrayTexture, FloatType, NearestFilter, RGBAFormat, type Ray } from 'three'
 import type { ShownAtoms, Structure } from '../pdb/structure.ts'
 import { ellipsoidExtent, noPiece } from './ellipsoidGeometry.ts'
@@ -98,16 +98,43 @@ export function atomSpans(structure: Structure, shown: ShownAtoms): PieceSpans {
   return builder.finish()
 }
 
-// A merged level's groups, piece by piece, from the shown atoms' spans and each shown atom's group. The groups are
-// numbered in the order the shown list first reaches them, so the groups of a stretch of it are themselves a stretch,
-// and a chain's runs, which share their chain's one blob, make one stretch of a single group
-export function groupSpans(atoms: PieceSpans, groups: Uint32Array): PieceSpans {
+// A merged level's blobs, piece by piece, where a residue's blobs are numbered together and the residues' in their
+// order: for each stretch of the shown atoms, the blobs from its first residue's first up to its last residue's last,
+// given the residue each shown atom is in, and each residue's first blob and how many it has, by the residue's row
+export function residueSpans(
+  atoms: PieceSpans,
+  residueOf: (atom: number) => number,
+  firstBlob: Uint32Array,
+  blobCount: Uint8Array,
+): PieceSpans {
   const builder = new SpanBuilder(atoms.sizes.length)
   for (let piece = 0; piece < atoms.sizes.length; piece++) {
     builder.open(piece)
     for (let s = atoms.first[piece]; s < atoms.first[piece + 1]; s++) {
-      builder.add(groups[atoms.start[s]], groups[atoms.end[s] - 1] + 1)
+      const last = residueOf(atoms.end[s] - 1)
+      builder.add(firstBlob[residueOf(atoms.start[s])], firstBlob[last] + blobCount[last])
     }
+  }
+  return builder.finish()
+}
+
+// A chain level's blobs, piece by piece: each chain's own, one in each layer it has members in, given each chain's blob
+// in each layer by the chain's row times the layers plus the layer, or below 0 where it has none there
+export function chainSpans(pieces: number, chainBlobs: Int32Array, layers: number): PieceSpans {
+  const builder = new SpanBuilder(pieces)
+  // A piece's blobs in order, each added after the last below it
+  const owned: number[] = []
+  for (let piece = noPiece + 1; piece < pieces; piece++) {
+    builder.open(piece)
+    owned.length = 0
+    for (let layer = 0; layer < layers; layer++) {
+      const blob = chainBlobs[(piece - 1) * layers + layer] ?? -1
+      if (blob < 0) continue
+      let at = owned.length
+      while (at > 0 && owned[at - 1] > blob) at--
+      owned.splice(at, 0, blob)
+    }
+    for (const blob of owned) builder.add(blob, blob + 1)
   }
   return builder.finish()
 }
@@ -257,12 +284,13 @@ export function sphereInView(planes: Float64Array, x: number, y: number, z: numb
 }
 
 // The piece table the vertex stage reads: a texel per piece, a channel per level, whose value below 0 hides the
-// piece's instances at that level and whose value at 0 or above draws them. It's a stack of square layers, so that a
+// piece's instances at that level, and whose value from 0 to 1 draws them, grown that far out of their parents, from
+// nothing beyond their parents' own picture at 0 to wholly themselves at 1. It's a stack of square layers, so that a
 // change sends again only the layers it touched
 export const tableSide = 64
 export const texelsPerLayer = tableSide * tableSide
 export const hiddenTexel = -1
-export const shownTexel = 0
+export const grownTexel = 1
 // The channels of a texel, of which the levels take the first three and the last stays hidden
 const texelSize = 4
 

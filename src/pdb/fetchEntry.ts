@@ -5,7 +5,7 @@
 import type { StructureBounds } from './bounds.ts'
 import type { Burial } from './burial.ts'
 import type { LoadProgress, LoadReport } from './entryLoad.ts'
-import { buffersOf, EntryWorker, type EntryReply } from './entryWorker.ts'
+import { buffersOf, EntryWorker, type EntryReply, type EntryWorkerHandle } from './entryWorker.ts'
 import { MergedGrowth, type LoadChoice, type MergedLevels } from './merge.ts'
 import { copyPlaces, StructureBuilder, type ShownChoice, type Structure } from './structure.ts'
 
@@ -89,36 +89,82 @@ export class EntryCache {
 
 const cache = new EntryCache(cacheBytes)
 
+// What makes a worker: the loader's own, or a stand-in a test puts in its place
+type WorkerMaker = (onReply: (reply: EntryReply) => void) => EntryWorkerHandle
+let makeWorker: WorkerMaker = (onReply) => new EntryWorker(onReply)
+
+// Has the loads and merges that follow made by another kind of worker, as a test's stand-in, or by the loader's own
+// again where it's given none
+export function setWorkerMaker(maker: WorkerMaker | null) {
+  makeWorker = maker ?? ((onReply) => new EntryWorker(onReply))
+}
+
 // The load under way, which a new load supersedes and a repeat of its ID takes over, and the entry shown since its
 // first batch arrived, with its worker while it has one
 let loading: {
   id: string
-  worker: EntryWorker
+  worker: EntryWorkerHandle
   promise: Promise<Loaded>
   reject: (error: Error) => void
   current: { handlers: LoadHandlers }
 } | null = null
-let shown: { entry: Entry; worker: EntryWorker | null; handlers: LoadHandlers } | null = null
+let shown: { entry: Entry; worker: EntryWorkerHandle | null; handlers: LoadHandlers } | null = null
 
-// The merges asked of the shown entry's worker, by their serials, of which only the latest is answered
-let merging: { serial: number; resolve: (merged: MergedLevels) => void; reject: (error: Error) => void } | null = null
+// The merges asked of the shown entry's worker and not yet answered, by their serials, and the serial of the latest
+// one answered. A worker answers the latest it has been asked when it comes to them, and an answer stands until a
+// newer one lands, so that a merge a newer request has superseded is still drawn where nothing newer has, and the
+// models playing move on however long each merge takes; an older answer that comes after a newer one is dropped
+interface Merging {
+  serial: number
+  choice: ShownChoice
+  layers: Uint8Array | null
+  resolve: (merged: MergedLevels) => void
+  reject: (error: Error) => void
+}
+let merging: Merging[] = []
+let landed = 0
 let serials = 0
 
 function aborted() {
   return new DOMException('A newer load superseded this one', 'AbortError')
 }
 
+// Gives every merge still waiting an error
+function dropMerges(error: Error) {
+  for (const merge of merging) merge.reject(error)
+  merging = []
+}
+
+// Gives the merge of a serial its levels, by the layers it was asked for, unless a newer one has landed, and those
+// asked before it, which will never land now, an AbortError
+function landMerge(serial: number, levels: MergedLevels) {
+  if (serial <= landed) return
+  landed = serial
+  const waiting = merging
+  merging = []
+  for (const merge of waiting) {
+    if (merge.serial === serial) merge.resolve({ ...levels, layers: merge.layers })
+    else if (merge.serial < serial) merge.reject(aborted())
+    else merging.push(merge)
+  }
+}
+
+// Asks a worker to merge again for a merge still waiting, the worker taking a copy of its layers
+function askMerge(worker: EntryWorkerHandle, { serial, choice, layers }: Merging) {
+  const copy = layers ? layers.slice() : null
+  worker.ask({ kind: 'merge', serial, choice, layers: copy }, copy ? [copy.buffer] : [])
+}
+
 // Ends the shown entry's worker, as another entry takes its place
 function releaseShown() {
   shown?.worker?.end()
-  merging?.reject(aborted())
-  merging = null
+  dropMerges(aborted())
 }
 
 // A worker given the shown entry's columns, where it has none, to work out its burial or merge its levels
 function workerFor(current: NonNullable<typeof shown>, burial: boolean) {
   if (current.worker) return current.worker
-  const worker = new EntryWorker((reply) => answer(current, reply))
+  const worker = makeWorker((reply) => answer(current, reply))
   current.worker = worker
   worker.ask({ kind: 'hold', places: copyPlaces(current.entry), burial })
   return worker
@@ -134,12 +180,9 @@ function answer(current: NonNullable<typeof shown>, reply: EntryReply) {
     console.info(`PDBSplat: burial of ${entry.atoms.count} atoms in ${Math.round(reply.milliseconds)} ms`)
     current.handlers.burial(entry, reply.burial)
   } else if (reply.kind === 'merged') {
-    if (merging?.serial !== reply.serial) return
-    merging.resolve(reply.merged)
-    merging = null
+    landMerge(reply.serial, reply.merged)
   } else if (reply.kind === 'failed') {
-    merging?.reject(new Error(reply.message))
-    merging = null
+    dropMerges(new Error(reply.message))
     current.worker?.end()
     current.worker = null
     console.warn(`PDBSplat: ${current.entry.id}: ${reply.message}`)
@@ -159,8 +202,12 @@ export function fetchEntry(input: string, choice: LoadChoice, handlers: LoadHand
     loading.worker.end()
     loading.reject(aborted())
     // An entry shown since the load's first batch stays shown without the load's worker, and is given one of its own
-    // when it next needs one
-    if (shown?.worker === loading.worker) shown.worker = null
+    // when it next needs one: at once where a merge asked of the load is still to come, which is asked again of it
+    if (shown?.worker === loading.worker) {
+      shown.worker = null
+      const latest = merging.at(-1)
+      if (latest) askMerge(workerFor(shown, false), latest)
+    }
     loading = null
   }
 
@@ -192,7 +239,7 @@ export function fetchEntry(input: string, choice: LoadChoice, handlers: LoadHand
   let builder: StructureBuilder | null = null
   const merged = new MergedGrowth()
   let current: NonNullable<typeof shown> | null = null
-  const worker = new EntryWorker((reply) => {
+  const worker = makeWorker((reply) => {
     if (reply.kind === 'progress') told.handlers.progress(reply.progress)
     else if (reply.kind === 'batch') {
       const { batch } = reply
@@ -214,10 +261,7 @@ export function fetchEntry(input: string, choice: LoadChoice, handlers: LoadHand
       }
       current.entry = entry
       current.handlers = told.handlers
-      if (batch.answers !== null && merging?.serial === batch.answers) {
-        merging.resolve(levels)
-        merging = null
-      }
+      if (batch.answers !== null) landMerge(batch.answers, levels)
       if (batch.report) {
         loading = null
         cache.keep(loaded)
@@ -230,8 +274,7 @@ export function fetchEntry(input: string, choice: LoadChoice, handlers: LoadHand
     else if (reply.kind === 'failed') {
       if (loading?.worker === worker) loading = null
       if (current) {
-        merging?.reject(new Error(reply.message))
-        merging = null
+        dropMerges(new Error(reply.message))
         current.worker = null
       }
       worker.end()
@@ -243,17 +286,24 @@ export function fetchEntry(input: string, choice: LoadChoice, handlers: LoadHand
   return promise
 }
 
-// The shown entry's levels merged again under a choice, by its worker. A newer request, or another entry, supersedes
-// this one, which then rejects with an AbortError
-export function mergeEntry(entry: Structure, choice: ShownChoice): Promise<MergedLevels> {
+// The shown entry's levels merged again under a choice, by the layers its shown atoms are drawn in, or in one layer
+// where those are null, by its worker. The levels given hold the layers asked for. Another entry, or a newer request
+// that lands first, supersedes this one, which then rejects with an AbortError
+export function mergeEntry(entry: Structure, choice: ShownChoice, layers: Uint8Array | null): Promise<MergedLevels> {
   const current = shown
   if (!current || current.entry !== entry) return Promise.reject(aborted())
-  merging?.reject(aborted())
   return new Promise<MergedLevels>((resolve, reject) => {
-    const serial = ++serials
-    merging = { serial, resolve, reject }
-    workerFor(current, false).ask({ kind: 'merge', serial, choice })
+    const merge: Merging = { serial: ++serials, choice, layers, resolve, reject }
+    merging.push(merge)
+    askMerge(workerFor(current, false), merge)
   })
+}
+
+// Settles every merge asked so far, as levels merged on the page itself supersede them: each still to come is dropped,
+// and an answer to one that comes later changes nothing
+export function settleMerges() {
+  dropMerges(aborted())
+  landed = serials
 }
 
 export function isAbort(error: unknown) {

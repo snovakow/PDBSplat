@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { Color } from 'three'
+import { Color, Group } from 'three'
+import type { Focus } from '../src/options.ts'
 import { burial as burialOf } from '../src/pdb/burial.ts'
+import { vdwRadii } from '../src/pdb/elements.ts'
+import { hiddenLayer, mergeLevels, partLayer, wholeLayer } from '../src/pdb/merge.ts'
 import {
   altLocOf,
   elementOf,
@@ -21,9 +24,11 @@ import {
   paintAtomTable,
   paintMerged,
   readAtomIndex,
+  shownLayers,
   tableSize,
   type TablePaint,
 } from '../src/viewer/atomTable.ts'
+import { SplatContent } from '../src/viewer/splatContent.ts'
 
 // The atoms' paint: the index bytes the field's table is read by, the table's shape, each painted atom's colour and
 // alpha, and the pick's threshold
@@ -239,4 +244,71 @@ void test("a merged level's paint is the weighted mean of its members' colours a
   assert.equal(elementOf(entry, shown.rows[2]), 'N')
   assert.equal(merged[3], 38)
   assert.equal(merged[7], 255)
+})
+
+// A protein of four residues, each its backbone's four atoms and two of its side chain's
+function proteinOf() {
+  const names = ['N', 'CA', 'C', 'O', 'CB', 'CG']
+  const atoms: Partial<AtomRecord>[] = []
+  for (let residue = 1; residue <= 4; residue++) {
+    names.forEach((atomName, k) => {
+      const side = k >= 4
+      atoms.push({ residueNumber: residue, atomName, element: atomName[0], x: residue * 3.8 + k * 0.4, y: side ? 1.5 + k * 0.6 : 0, z: k * 0.2 })
+    })
+  }
+  return structureOf(atoms)
+}
+
+void test("under backbone focus a protein's residue blobs are its backbone, whole, and its side chains, faded, which Fade repaints", () => {
+  const structure = proteinOf()
+  const shown = selectAtoms(structure, () => true)
+  const fadeOf = (focus: Focus, fade: number) => ({ shown, structure, focus, picked: null, fade, model: 1, modelCount: 1, conformations: 'first', layered: true }) as const
+  // Focus all draws every atom whole, in one layer
+  assert.equal(shownLayers(fadeOf('all', 0.3)), null)
+  // Backbone focus draws the backbone whole and the side chains in part, and hides them at Fade 0
+  const layers = shownLayers(fadeOf('backbone', 0.3))
+  const side = (i: number) => i % 6 >= 4
+  assert.deepEqual([...(layers ?? [])], Array.from({ length: shown.count }, (_, i) => (side(i) ? partLayer : wholeLayer)))
+  // Another Fade above 0 keeps the layers, and the same object, so nothing is merged again
+  assert.equal(shownLayers(fadeOf('backbone', 0.6)), layers)
+  assert.equal(shownLayers(fadeOf('backbone', 0.95)), layers)
+  // A Fade too small for a byte's half hides them, as Fade at 0 does, and one back above it draws them in part again
+  const hidden = shownLayers(fadeOf('backbone', 0.001))
+  assert.deepEqual([...(hidden ?? [])], Array.from({ length: shown.count }, (_, i) => (side(i) ? hiddenLayer : wholeLayer)))
+  assert.equal(shownLayers(fadeOf('backbone', 0)), hidden)
+  assert.deepEqual(shownLayers(fadeOf('backbone', 0.3)), layers)
+
+  // The residues' blobs, merged by those layers, and painted
+  const blobsUnder = (focus: Focus, fade: number) => {
+    const choice = { hydrogens: false, waters: false, conformations: 'first', model: 1 } as const
+    const merged = mergeLevels(structure, choice, shownLayers(fadeOf(focus, fade)))
+    const shape = { scale: 1, thermal: 0, ellipsoids: false }
+    const content = new SplatContent(structure, shown, choice, 'residues', shape, vdwRadii(structure.elements), new Group(), () => () => undefined)
+    assert.ok(content.grow(structure, shown, merged, [0, 0, 0], () => Infinity))
+    const paint: TablePaint = { ...defaults, ...fadeOf(focus, fade), colorBy: 'chain' }
+    while (!content.paintedFrom(paint)) content.paintOnward(paint, () => undefined)
+    const residues = content.levels[1]
+    assert.ok(residues?.blobs)
+    const { count } = residues.blobs.grouping
+    return {
+      alphas: Array.from({ length: count }, (_, b) => residues.paint[b * 4 + 3]),
+      centres: [...residues.blobs.centers.subarray(0, count * 3)],
+    }
+  }
+  const all = blobsUnder('all', 0.3)
+  const backbone = blobsUnder('backbone', 0.3)
+  // One whole blob a residue under Focus all; under backbone focus a whole one of its backbone and one of its side
+  // chain at Fade's share
+  const faded = (fade: number) => Uint8ClampedArray.from([255 * fade])[0]
+  assert.deepEqual(all.alphas, [255, 255, 255, 255])
+  assert.deepEqual(backbone.alphas, [255, faded(0.3), 255, faded(0.3), 255, faded(0.3), 255, faded(0.3)])
+  assert.notDeepEqual(backbone.centres.slice(0, 3), all.centres.slice(0, 3))
+  // Fade repaints the faded blobs, where they are
+  const brighter = blobsUnder('backbone', 0.6)
+  assert.deepEqual(brighter.alphas, [255, faded(0.6), 255, faded(0.6), 255, faded(0.6), 255, faded(0.6)])
+  assert.deepEqual(brighter.centres, backbone.centres)
+  // At Fade 0 the side chains are in no blob, and each residue's one blob is its backbone's
+  const bare = blobsUnder('backbone', 0)
+  assert.deepEqual(bare.alphas, [255, 255, 255, 255])
+  assert.deepEqual(bare.centres.slice(0, 3), backbone.centres.slice(0, 3))
 })

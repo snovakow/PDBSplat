@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Matrix4, PerspectiveCamera, Quaternion, Ray, Vector3, Vector4 } from 'three'
-import { selectAtoms, StructureBuilder, type AtomRecord } from '../src/pdb/structure.ts'
+import { hiddenLayer, partLayer, wholeLayer } from '../src/pdb/merge.ts'
+import { chainOf, selectAtoms, StructureBuilder, type AtomRecord, type ShownAtoms, type Structure } from '../src/pdb/structure.ts'
 import { surfaceDeviations } from '../src/viewer/ellipsoidGeometry.ts'
-import { levelGroups } from '../src/viewer/levels.ts'
+import { levelGroups, noGroup } from '../src/viewer/levels.ts'
 import {
   atomSpans,
-  groupSpans,
+  chainSpans,
   hiddenTexel,
   pickByPieces,
   pieceCount,
@@ -14,6 +15,7 @@ import {
   PieceTable,
   PieceWalk,
   planesSize,
+  residueSpans,
   sidePlanes,
   sphereInView,
   sphereSize,
@@ -102,14 +104,14 @@ void test("each chain is a piece, owning its runs' stretches of the shown atoms 
   assert.deepEqual(stretchesOf(atoms, 3), [[4, 6]])
   assert.deepEqual([...atoms.sizes], [0, 3, 1, 2])
   // One residue blob for each residue, as stretches of the residues' own list
-  const residues = groupSpans(atoms, levelGroups(structure, shown, 'residues').groups)
+  const residues = mergedSpans(structure, shown, 'residues', null)
   assert.deepEqual(stretchesOf(residues, 1), [
     [0, 2],
     [3, 4],
   ])
   assert.deepEqual([...residues.sizes], [0, 3, 1, 2])
   // A chain's runs share its one blob, which is one stretch of a single group
-  const chains = groupSpans(atoms, levelGroups(structure, shown, 'chains').groups)
+  const chains = mergedSpans(structure, shown, 'chains', null)
   assert.deepEqual(stretchesOf(chains, 1), [[0, 1]])
   assert.deepEqual(stretchesOf(chains, 2), [[1, 2]])
   assert.deepEqual(stretchesOf(chains, 3), [[2, 3]])
@@ -117,6 +119,59 @@ void test("each chain is a piece, owning its runs' stretches of the shown atoms 
   // A chain with no atom shown owns nothing
   const none = atomSpans(structure, selectAtoms(structure, (atom) => atom !== 3))
   assert.deepEqual([...none.sizes], [0, 4, 0, 2])
+})
+
+// A merged level's spans as the content makes them, from the shown atoms' groups by the layers given: each residue's
+// first blob and how many it has, and each chain's blob in each layer
+function mergedSpans(structure: Structure, shown: ShownAtoms, level: 'residues' | 'chains', layers: Uint8Array | null) {
+  const atoms = atomSpans(structure, shown)
+  const { groups } = levelGroups(structure, shown, level, layers)
+  if (level === 'chains') {
+    const chainBlobs = new Int32Array(structure.chains.count * 2).fill(-1)
+    for (let i = 0; i < shown.count; i++) {
+      const layer = layers ? layers[i] : wholeLayer
+      if (layer !== hiddenLayer) chainBlobs[chainOf(structure, shown.rows[i]) * 2 + layer] = groups[i]
+    }
+    return chainSpans(pieceCount(structure), chainBlobs, 2)
+  }
+  const { residue } = structure.atoms
+  const first = new Uint32Array(structure.residues.count)
+  const count = new Uint8Array(structure.residues.count)
+  let blobs = 0
+  for (let i = 0; i < shown.count; ) {
+    const row = residue[shown.rows[i]]
+    const owned = new Set<number>()
+    for (; i < shown.count && residue[shown.rows[i]] === row; i++) if (groups[i] !== noGroup) owned.add(groups[i])
+    first[row] = blobs
+    count[row] = owned.size
+    blobs += owned.size
+  }
+  return residueSpans(atoms, (i) => residue[shown.rows[i]], first, count)
+}
+
+void test("drawn by layer, a residue's and a chain's blobs in each layer are its piece's, and a hidden atom's in none", () => {
+  const structure = hemeStructure()
+  const shown = selectAtoms(structure, () => true)
+  // Atoms 0 and 1 are chain A's first residue, 2 its second, 3 chain B's, 4 chain A's heme and 5 and 6 the second
+  // model's: the first residue in part and whole, the heme in part, and the second model's first atom hidden
+  const layers = new Uint8Array([partLayer, wholeLayer, wholeLayer, wholeLayer, partLayer, hiddenLayer, wholeLayer])
+  const residues = mergedSpans(structure, shown, 'residues', layers)
+  // Chain A: its first residue's two blobs and its second's one, then its heme's, after chain B's
+  assert.deepEqual(stretchesOf(residues, 1), [
+    [0, 3],
+    [4, 5],
+  ])
+  assert.deepEqual(stretchesOf(residues, 2), [[3, 4]])
+  // The second model's hidden atom's residue has no blob
+  assert.deepEqual(stretchesOf(residues, 3), [[5, 6]])
+  assert.deepEqual([...residues.sizes], [0, 4, 1, 1])
+  // Chain A has a blob whole and one in part, numbered as their first residues come, the whole one first
+  const chains = mergedSpans(structure, shown, 'chains', layers)
+  assert.deepEqual(stretchesOf(chains, 1), [[0, 2]])
+  assert.deepEqual(stretchesOf(chains, 2), [[2, 3]])
+  assert.deepEqual(stretchesOf(chains, 3), [[3, 4]])
+  const { groups } = levelGroups(structure, shown, 'residues', layers)
+  assert.deepEqual([...groups], [1, 0, 2, 3, 4, noGroup, 5])
 })
 
 // Random ellipsoids in a box, each a random rotation of a random diagonal covariance
